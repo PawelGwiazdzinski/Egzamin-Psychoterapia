@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lektor</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23c2410c'/><path d='M9 8h4v16H9zM15 12l9 4-9 4z' fill='white'/></svg>">
+</head>
+<body>
+<div id="app" class="layout">
+  <!-- ============ BIBLIOTEKA ============ -->
+  <aside id="library" class="panel">
+    <header class="panel-head">
+      <h1 class="brand">Lektor</h1>
+      <button class="icon-btn" id="libClose" title="Zwiń">⟨</button>
+    </header>
+    <label class="drop" id="drop">
+      <input type="file" id="fileInput" accept=".pdf,.epub,.txt,.md,.mobi,.fb2,.xps" hidden>
+      <strong>Dodaj plik</strong>
+      <span>PDF, EPUB, TXT – przeciągnij tutaj albo kliknij</span>
+    </label>
+    <button class="ghost wide" id="pasteBtn">Wklej tekst</button>
+    <ul id="docList" class="doc-list"></ul>
+    <footer class="lib-foot">
+      <div id="googleBox"></div>
+      <div id="ocrBox" class="muted small"></div>
+    </footer>
+  </aside>
+
+  <!-- ============ CZYTNIK ============ -->
+  <main id="reader">
+    <div class="toolbar">
+      <button class="icon-btn" id="libOpen" title="Biblioteka">☰</button>
+      <h2 id="docTitle">Wybierz albo dodaj dokument</h2>
+      <div class="seg" id="viewSeg">
+        <button data-view="pages" class="on">Strony</button>
+        <button data-view="text">Tekst</button>
+      </div>
+      <label class="follow" title="Przewijaj automatycznie do czytanego zdania"><input type="checkbox" id="follow" checked> Śledź</label>
+      <button class="icon-btn" id="notesOpen" title="Notatki">✎</button>
+    </div>
+    <div id="viewport">
+      <div id="empty" class="empty">
+        <h3>Darmowy lektor PDF</h3>
+        <p>Dodaj PDF, a Lektor przeczyta go na głos i podświetli każde zdanie.<br>
+           W trakcie słuchania naciśnij <kbd>N</kbd>, żeby zanotować cytat i swoją myśl. Notatka trafi do Google Docs.</p>
+        <p class="muted small"><kbd>Spacja</kbd> start/pauza · <kbd>←</kbd>/<kbd>→</kbd> poprzednie/następne zdanie · <kbd>+</kbd>/<kbd>−</kbd> tempo · <kbd>N</kbd> notatka</p>
+      </div>
+      <div id="pages" class="pages" hidden></div>
+      <article id="textView" class="text-view" hidden></article>
+    </div>
+
+    <!-- ============ ODTWARZACZ ============ -->
+    <div class="player" id="player">
+      <div class="progress" id="progress"><div id="progressFill"></div></div>
+      <div class="player-row">
+        <div class="transport">
+          <button class="icon-btn" id="prevBtn" title="Poprzednie zdanie (←)">⏮</button>
+          <button class="play" id="playBtn" title="Czytaj (Spacja)">▶</button>
+          <button class="icon-btn" id="nextBtn" title="Następne zdanie (→)">⏭</button>
+        </div>
+        <div class="pos small muted" id="posLabel">—</div>
+        <div class="controls">
+          <label class="ctl">Tempo <input type="range" id="rate" min="0.5" max="3" step="0.05" value="1"><output id="rateOut">1.00×</output></label>
+          <div class="seg small-seg" id="langSeg">
+            <button data-lang="pl">PL</button><button data-lang="en">EN</button>
+          </div>
+          <select id="engineSel" title="Silnik mowy"></select>
+          <select id="voiceSel" title="Głos"></select>
+          <button class="accent" id="noteBtn" title="Notatka z bieżącego zdania (N)">＋ Notatka</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============ NOTATKI ============ -->
+  <aside id="notes" class="panel">
+    <header class="panel-head">
+      <h2>Notatki</h2>
+      <button class="icon-btn" id="notesClose" title="Zwiń">⟩</button>
+    </header>
+
+    <form id="composer" class="composer" hidden>
+      <div class="composer-label">Cytat
+        <span class="quote-tools">
+          <button type="button" class="chip" id="qPrev" title="Dołącz poprzednie zdanie">＋ poprzednie</button>
+          <button type="button" class="chip" id="qNext" title="Dołącz następne zdanie">＋ następne</button>
+        </span>
+      </div>
+      <blockquote id="qText" contenteditable="true" spellcheck="false"></blockquote>
+      <label class="composer-label" for="thought">Moja myśl
+        <button type="button" class="chip" id="dictate" title="Dyktuj (mikrofon)">🎙 dyktuj</button>
+      </label>
+      <textarea id="thought" rows="4" placeholder="Co o tym myślisz? (Ctrl+Enter zapisuje)"></textarea>
+      <label class="composer-label" for="group">Grupa</label>
+      <input id="group" list="groupList" placeholder="np. Mechanizmy obronne" autocomplete="off">
+      <datalist id="groupList"></datalist>
+      <div id="groupChips" class="chips"></div>
+      <div class="composer-actions">
+        <label class="small"><input type="checkbox" id="resumeAfter" checked> wznów czytanie</label>
+        <span class="spacer"></span>
+        <button type="button" class="ghost" id="cancelNote">Anuluj</button>
+        <button type="submit" class="accent">Zapisz</button>
+      </div>
+    </form>
+
+    <div class="notes-tools">
+      <a id="gdocLink" class="small" target="_blank" hidden>Otwórz w Google Docs ↗</a>
+      <span class="spacer"></span>
+      <button class="chip" id="gdocMenu" title="Opcje Google Docs">⋯</button>
+    </div>
+    <div id="gdocOptions" class="gdoc-options" hidden>
+      <button class="ghost wide" id="rebuildBtn">Przebuduj dokument Google z notatek</button>
+      <button class="ghost wide" id="linkBtn">Podłącz istniejący dokument Google…</button>
+      <a class="ghost wide btnlike" id="mdExport">Pobierz notatki (.md)</a>
+    </div>
+    <div id="noteList" class="note-list"></div>
+  </aside>
+</div>
+
+<dialog id="pasteDlg">
+  <form method="dialog" class="dlg">
+    <h3>Wklej tekst</h3>
+    <input id="pasteTitle" placeholder="Tytuł (opcjonalnie)">
+    <textarea id="pasteText" rows="12" placeholder="Wklej tutaj tekst do przeczytania…"></textarea>
+    <div class="composer-actions"><span class="spacer"></span>
+      <button value="cancel" class="ghost">Anuluj</button><button value="ok" class="accent">Dodaj</button></div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<audio id="audio" preload="auto"></audio>
+<script src="app.js"></script>
+</body>
+</html>

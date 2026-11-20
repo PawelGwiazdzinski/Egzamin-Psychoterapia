@@ -1,0 +1,2 @@
+# Opcjonalnie: głosy offline (Piper). Głosy pobierają się same przy pierwszym użyciu (~60–120 MB).
+piper-tts>=1.2
