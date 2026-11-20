@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Lektor</string>
+    <string name="title_activity_main">Lektor</string>
+    <string name="package_name">pl.lektor.app</string>
+    <string name="custom_url_scheme">pl.lektor.app</string>
+</resources>

@@ -1,0 +1,73 @@
+name: Lektor – Android APK
+
+on:
+  push:
+    paths:
+      - "android-app/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Zależności JS
+        run: npm ci
+
+      - name: Kopiowanie aplikacji do projektu Androida
+        run: npm run sync
+
+      - name: Klucz podpisu z sekretu
+        env:
+          KS: ${{ secrets.LEKTOR_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            mkdir -p android/keystore && echo "$KS" | base64 -d > android/keystore/lektor.jks
+          else
+            echo "::warning::Brak sekretu LEKTOR_KEYSTORE_B64 – APK podpisany kluczem tymczasowym (logowanie Google nie zadziała, aktualizacje wymagają odinstalowania)."
+          fi
+
+      - name: Budowanie APK
+        env:
+          LEKTOR_KEYSTORE_PASSWORD: ${{ secrets.LEKTOR_KEYSTORE_PASSWORD }}
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk ../Lektor.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lektor-apk
+          path: android-app/Lektor.apk
+
+      - name: Wydanie (link do pobrania na telefon)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: lektor-${{ github.run_number }}
+          name: Lektor ${{ github.run_number }} (Android)
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            Pobierz **Lektor.apk** na telefonie i otwórz plik, żeby zainstalować.
+            Gałąź: ${{ github.ref_name }}
+          files: android-app/Lektor.apk

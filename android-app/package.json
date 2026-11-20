@@ -1,0 +1,20 @@
+{
+  "name": "lektor-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lektor – darmowy czytnik PDF z głosem i notatkami w Google Docs (Android)",
+  "scripts": {
+    "vendor": "node scripts/vendor.mjs",
+    "sync": "npm run vendor && cap sync android",
+    "serve": "npx http-server www -p 8080 -c-1"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.6.2",
+    "pdfjs-dist": "^5.4.149"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2"
+  }
+}

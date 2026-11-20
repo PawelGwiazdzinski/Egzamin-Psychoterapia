@@ -1,0 +1,8 @@
+{
+  "appId": "pl.lektor.app",
+  "appName": "Lektor",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  }
+}

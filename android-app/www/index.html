@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="color-scheme" content="light dark">
+<title>Lektor</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <button class="icon-btn" id="libOpen" aria-label="Biblioteka">☰</button>
+    <h1 id="docTitle">Lektor</h1>
+    <button class="icon-btn" id="viewToggle" aria-label="Przełącz widok strony / tekst" title="Strony / Tekst">¶</button>
+    <button class="icon-btn" id="notesOpen" aria-label="Notatki">✎<span id="notesCount" class="count" hidden></span></button>
+  </header>
+
+  <main id="viewport">
+    <section id="empty" class="empty">
+      <h2>Darmowy lektor PDF</h2>
+      <p>Dodaj PDF, a Lektor przeczyta go na głos i podświetli każde zdanie.</p>
+      <p>W trakcie słuchania stuknij <b>＋ Notatka</b>, żeby zapisać cytat i swoją myśl. Notatka trafi do Google Docs.</p>
+      <label class="accent big"><input type="file" class="fileInput" accept="application/pdf,.pdf,.txt,text/plain" hidden>Otwórz PDF</label>
+    </section>
+    <div id="pages" class="pages" hidden></div>
+    <article id="textView" class="text-view" hidden></article>
+  </main>
+
+  <footer class="player">
+    <div class="progress" id="progress"><div id="progressFill"></div></div>
+    <div class="player-row">
+      <button class="icon-btn" id="prevBtn" aria-label="Poprzednie zdanie">⏮</button>
+      <button class="play" id="playBtn" aria-label="Czytaj">▶</button>
+      <button class="icon-btn" id="nextBtn" aria-label="Następne zdanie">⏭</button>
+      <button class="chip rate" id="rateBtn" aria-label="Tempo">1.0×</button>
+      <span class="pos" id="posLabel"></span>
+      <button class="icon-btn" id="settingsBtn" aria-label="Ustawienia">⚙</button>
+      <button class="accent" id="noteBtn">＋ Notatka</button>
+    </div>
+  </footer>
+
+  <!-- biblioteka -->
+  <aside id="library" class="drawer left" hidden>
+    <header class="drawer-head"><h2 class="brand">Lektor</h2><button class="icon-btn close" aria-label="Zamknij">✕</button></header>
+    <label class="drop"><input type="file" class="fileInput" accept="application/pdf,.pdf,.txt,text/plain" hidden>
+      <strong>＋ Dodaj PDF</strong><span>albo udostępnij plik do Lektora z innej aplikacji</span></label>
+    <button class="ghost wide" id="pasteBtn">Wklej tekst</button>
+    <ul id="docList" class="doc-list"></ul>
+  </aside>
+
+  <!-- notatki -->
+  <aside id="notes" class="drawer right" hidden>
+    <header class="drawer-head"><h2>Notatki</h2><button class="icon-btn close" aria-label="Zamknij">✕</button></header>
+    <div class="notes-tools">
+      <a id="gdocLink" target="_blank" hidden>Otwórz w Google Docs ↗</a>
+      <span class="spacer"></span>
+      <button class="chip" id="gdocMenu">⋯</button>
+    </div>
+    <div id="gdocOptions" class="gdoc-options" hidden>
+      <button class="ghost wide" id="rebuildBtn">Przebuduj dokument Google z notatek</button>
+      <button class="ghost wide" id="linkBtn">Podłącz istniejący dokument Google…</button>
+      <button class="ghost wide" id="mdExport">Kopiuj notatki jako tekst (Markdown)</button>
+    </div>
+    <div id="noteList" class="note-list"></div>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
+</div>
+
+<!-- nowa notatka -->
+<dialog id="composer" class="sheet">
+  <form method="dialog" id="composerForm">
+    <div class="sheet-grip"></div>
+    <div class="label-row">CYTAT <span class="spacer"></span>
+      <button type="button" class="chip" id="qPrev">＋ poprzednie</button>
+      <button type="button" class="chip" id="qNext">＋ następne</button>
+    </div>
+    <blockquote id="qText" contenteditable="true"></blockquote>
+    <div class="label-row">MOJA MYŚL <span class="spacer"></span><button type="button" class="chip" id="dictate">🎙 dyktuj</button></div>
+    <textarea id="thought" rows="4" placeholder="Co o tym myślisz?"></textarea>
+    <div class="label-row">GRUPA</div>
+    <input id="group" list="groupList" placeholder="np. Mechanizmy obronne" autocomplete="off">
+    <datalist id="groupList"></datalist>
+    <div id="groupChips" class="chips"></div>
+    <div class="actions">
+      <label class="small"><input type="checkbox" id="resumeAfter" checked> wznów czytanie</label>
+      <span class="spacer"></span>
+      <button type="button" class="ghost" id="cancelNote">Anuluj</button>
+      <button type="submit" class="accent" id="saveNote">Zapisz</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ustawienia -->
+<dialog id="settings" class="sheet">
+  <form method="dialog">
+    <div class="sheet-grip"></div>
+    <h3>Głos i czytanie</h3>
+    <label class="row">Język <span class="seg" id="langSeg"><button type="button" data-lang="pl">PL</button><button type="button" data-lang="en">EN</button></span></label>
+    <label class="row">Silnik <select id="engineSel"></select></label>
+    <label class="row">Głos <select id="voiceSel"></select></label>
+    <button type="button" class="chip" id="testVoice">▶ posłuchaj</button>
+    <label class="row">Tempo <input type="range" id="rate" min="0.5" max="3" step="0.05"><output id="rateOut"></output></label>
+    <label class="row">Rozmiar tekstu <input type="range" id="fontSize" min="15" max="28" step="1"></label>
+    <label class="row"><span>Śledź czytany fragment</span><input type="checkbox" id="follow"></label>
+    <button type="button" class="ghost wide" id="ttsSettings">Pobierz / zmień głosy telefonu…</button>
+    <p class="hint">Najlepsze darmowe męskie głosy: w <b>Ustawienia → Zarządzanie ogólne → Zamiana tekstu na mowę</b> wybierz
+      <b>Usługi Google do zamiany mowy</b> i pobierz polski oraz angielski (US). Lektor sam wybierze głos męski.</p>
+
+    <h3>Google Docs</h3>
+    <div id="googleBox"></div>
+
+    <h3>Zaawansowane</h3>
+    <label class="col">Serwer Unlimited-OCR (opcjonalnie, dla skanów)
+      <input id="uocrUrl" placeholder="http://192.168.1.10:10000" inputmode="url"></label>
+    <label class="col">Klucz API ElevenLabs (opcjonalnie, płatne powyżej limitu)
+      <input id="elevenKey" type="password" placeholder="sk_…" autocomplete="off"></label>
+    <div class="actions"><span class="spacer"></span><button class="accent">Gotowe</button></div>
+  </form>
+</dialog>
+
+<dialog id="pasteDlg" class="sheet">
+  <form method="dialog">
+    <h3>Wklej tekst</h3>
+    <input id="pasteTitle" placeholder="Tytuł (opcjonalnie)">
+    <textarea id="pasteText" rows="10" placeholder="Wklej tutaj tekst do przeczytania…"></textarea>
+    <div class="actions"><span class="spacer"></span><button value="cancel" class="ghost">Anuluj</button><button value="ok" class="accent">Dodaj</button></div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
