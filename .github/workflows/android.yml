@@ -44,11 +44,20 @@ jobs:
       - name: Klucz podpisu z sekretu
         env:
           KS: ${{ secrets.LEKTOR_KEYSTORE_B64 }}
+          LEKTOR_KEYSTORE_PASSWORD: ${{ secrets.LEKTOR_KEYSTORE_PASSWORD }}
         run: |
-          if [ -n "$KS" ]; then
-            mkdir -p android/keystore && echo "$KS" | base64 -d > android/keystore/lektor.jks
-          else
-            echo "::warning::Brak sekretu LEKTOR_KEYSTORE_B64 – APK podpisany kluczem tymczasowym (logowanie Google nie zadziała, aktualizacje wymagają odinstalowania)."
+          if [ -z "$KS" ]; then
+            echo "::warning::Brak sekretu LEKTOR_KEYSTORE_B64 – APK podpisany kluczem tymczasowym (logowanie Google nie zadziała)."
+            exit 0
+          fi
+          mkdir -p android/keystore
+          echo "$KS" | tr -d ' \r\n' | base64 -d > android/keystore/lektor.jks || true
+          SIZE=$(stat -c %s android/keystore/lektor.jks)
+          SUM=$(sha256sum android/keystore/lektor.jks | cut -c1-12)
+          echo "Klucz z sekretu: ${#KS} znaków base64 -> $SIZE bajtów, sha256 $SUM…"
+          if ! keytool -list -keystore android/keystore/lektor.jks -storepass "$LEKTOR_KEYSTORE_PASSWORD" > /dev/null 2>&1; then
+            echo "::warning::Klucz z sekretów jest uszkodzony albo hasło się nie zgadza (${#KS} znaków base64, $SIZE bajtów). APK podpisany kluczem tymczasowym – popraw sekrety LEKTOR_KEYSTORE_B64 / LEKTOR_KEYSTORE_PASSWORD."
+            rm -f android/keystore/lektor.jks
           fi
 
       - name: Budowanie APK
