@@ -41,7 +41,7 @@ APK buduje się automatycznie na GitHubie (workflow `.github/workflows/android.y
    Żeby Google nie wylogowywał co 7 dni, kliknij później **Publish app**. Do własnego użytku weryfikacja nie jest potrzebna.
 4. W **Credentials** wybierz **Create credentials → OAuth client ID → Android**:
    * Package name: `pl.lektor.app`
-   * SHA-1: `90:C4:8D:52:4B:2E:A6:FE:3E:91:83:24:72:FB:66:8F:2B:14:C5:2A`
+   * SHA-1: `D7:83:43:62:64:00:F6:5F:AF:86:75:6D:8B:9F:A4:43:64:0D:20:94`
 5. W Lektorze otwórz ⚙ → **Połącz z Google Docs** i wybierz swoje konto.
 
 ### Klucz podpisu (jednorazowo, przed pierwszym budowaniem)
@@ -51,13 +51,13 @@ Klucz nie może leżeć w repozytorium, dlatego trzymamy go w **sekrecie GitHuba
 
 1. W repozytorium otwórz **Settings → Secrets and variables → Actions → New repository secret**.
 2. Dodaj dwa sekrety:
-   * `LEKTOR_KEYSTORE_B64`: cała zawartość pliku `LEKTOR_KEYSTORE_B64.txt` (klucz zakodowany w base64),
+   * `LEKTOR_KEYSTORE_B64`: cała zawartość pliku `LEKTOR_KEYSTORE_B64.txt` (klucz zakodowany w base64, 1352 znaki; po zapisaniu budowanie wypisuje w logu długość, więc łatwo sprawdzić, czy nic się nie ucięło),
    * `LEKTOR_KEYSTORE_PASSWORD`: hasło do klucza.
 3. Uruchom ponownie workflow **Lektor – Android APK** (zakładka Actions → Run workflow).
 
-Odcisk SHA-1 tego klucza to `90:C4:8D:52:4B:2E:A6:FE:3E:91:83:24:72:FB:66:8F:2B:14:C5:2A` (wpisz go w kroku 4 powyżej).
+Odcisk SHA-1 tego klucza to `D7:83:43:62:64:00:F6:5F:AF:86:75:6D:8B:9F:A4:43:64:0D:20:94` (wpisz go w kroku 4 powyżej).
 Własny klucz możesz też wygenerować poleceniem
-`keytool -genkeypair -keystore lektor.jks -alias lektor -keyalg RSA -validity 10000` (to samo hasło dla magazynu i klucza),
+`keytool -genkeypair -keystore lektor.jks -storetype PKCS12 -alias lektor -keyalg EC -groupname secp256r1 -validity 10000` (to samo hasło dla magazynu i klucza),
 a potem zakodować go: `base64 -w0 lektor.jks`.
 Bez sekretu APK też się zbuduje, ale logowanie Google nie zadziała, a każdą nową wersję trzeba będzie instalować od nowa.
 
