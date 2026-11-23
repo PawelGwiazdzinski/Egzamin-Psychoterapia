@@ -1,9 +1,52 @@
-// Notatki w Google Docs: jeden dokument na czytaną pozycję, grupy = nagłówki 2. stopnia.
+// Notatki w Google Docs. Dwie drogi:
+//  * "script"  – skrypt Google Apps Script na koncie użytkownika (polecane: bez konsoli Google Cloud, bez SHA-1),
+//  * "oauth"   – bezpośrednio Google Docs API z tokenem OAuth (zaawansowane).
 import { googleToken, http } from "./native.js";
+import { prefs } from "./db.js";
 
 const API = "https://docs.googleapis.com/v1/documents";
 let token = null;
 
+export const docUrl = (id) => `https://docs.google.com/document/d/${id}/edit`;
+export function parseDocLink(raw) {
+  const m = String(raw || "").match(/\/d\/([A-Za-z0-9_-]{20,})/) || String(raw || "").trim().match(/^([A-Za-z0-9_-]{20,})$/);
+  return m ? m[1] : null;
+}
+export function parseScriptUrl(raw) {
+  const m = String(raw || "").match(/https:\/\/script\.google\.com\/(?:a\/[^/]+\/)?macros\/s\/[A-Za-z0-9_-]+\/exec/);
+  return m ? m[0] : null;
+}
+
+export const mode = () => prefs.get("gdocsMode", null); // 'script' | 'oauth' | null
+export const isConfigured = () => mode() === "script" ? !!prefs.get("scriptUrl", "") : mode() === "oauth";
+
+export function setScript(url) {
+  prefs.set("scriptUrl", url);
+  prefs.set("gdocsMode", "script");
+}
+export function disconnect() {
+  prefs.set("gdocsMode", null);
+  prefs.set("scriptUrl", "");
+  token = null;
+}
+export async function connectOAuth() {
+  token = await googleToken(true);
+  prefs.set("gdocsMode", "oauth");
+  return true;
+}
+
+/* ------------------------------------------------------------------ Apps Script */
+async function script(action, payload = {}) {
+  const url = prefs.get("scriptUrl", "");
+  if (!url) throw new Error("Nie skonfigurowano Google Docs");
+  const r = await http({ url, method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" },
+    data: JSON.stringify({ action, ...payload }), responseType: "json", timeout: 90000 });
+  if (!r || typeof r !== "object") throw new Error("Skrypt odpowiedział niezrozumiale. Sprawdź, czy wdrożenie ma dostęp „Każdy”.");
+  if (r.error) throw new Error(r.error);
+  return r;
+}
+
+/* ------------------------------------------------------------------ OAuth (REST) */
 async function call(method, url, data, retry = true) {
   if (!token) token = await googleToken(true);
   try {
@@ -13,14 +56,10 @@ async function call(method, url, data, retry = true) {
     throw e;
   }
 }
+const batch = (id, requests) => call("POST", `${API}/${id}:batchUpdate`, { requests });
+const u16 = (s) => s.length;
 
-export async function connect() { token = await googleToken(true); return true; }
-export function disconnect() { token = null; }
-export const docUrl = (id) => `https://docs.google.com/document/d/${id}/edit`;
-
-const u16 = (s) => s.length; // JS liczy w UTF-16 – tak jak Google Docs
-
-export async function createDoc(title) {
+async function oauthCreateDoc(title) {
   const d = await call("POST", API, { title: `Notatki – ${title}` });
   const text = `Notatki – ${title}\n`;
   await batch(d.documentId, [
@@ -29,9 +68,6 @@ export async function createDoc(title) {
   ]);
   return d.documentId;
 }
-
-const batch = (id, requests) => call("POST", `${API}/${id}:batchUpdate`, { requests });
-
 function paragraphs(doc) {
   const out = [];
   for (const el of doc.body?.content || []) {
@@ -41,7 +77,6 @@ function paragraphs(doc) {
   }
   return out;
 }
-
 function noteLines(n) {
   const lines = [];
   if (n.quote) lines.push([`„${n.quote.trim()}”${n.page != null ? ` — s. ${n.page + 1}` : ""}`, "quote"]);
@@ -49,7 +84,6 @@ function noteLines(n) {
   lines.push(["", "spacer"]);
   return lines;
 }
-
 const grey = (v) => ({ color: { rgbColor: { red: v, green: v, blue: v } } });
 function styleRequests(start, lines) {
   const reqs = [];
@@ -59,8 +93,7 @@ function styleRequests(start, lines) {
     const range = { startIndex: idx, endIndex: end };
     if (kind === "heading" || kind === "title") {
       reqs.push({ updateParagraphStyle: { range, paragraphStyle: { namedStyleType: kind === "title" ? "TITLE" : "HEADING_2" }, fields: "namedStyleType" } });
-      idx = end;
-      continue;
+      idx = end; continue;
     }
     const ps = { namedStyleType: "NORMAL_TEXT", indentStart: { magnitude: 0, unit: "PT" }, indentFirstLine: { magnitude: 0, unit: "PT" } };
     let fields = "namedStyleType,indentStart,indentFirstLine";
@@ -70,17 +103,13 @@ function styleRequests(start, lines) {
       fields += ",borderLeft";
     }
     reqs.push({ updateParagraphStyle: { range, paragraphStyle: ps, fields } });
-    if (text) {
-      reqs.push({ updateTextStyle: { range: { startIndex: idx, endIndex: end - 1 },
-        textStyle: { italic: kind === "quote", foregroundColor: kind === "quote" ? grey(0.3) : grey(0) }, fields: "italic,foregroundColor" } });
-    }
+    if (text) reqs.push({ updateTextStyle: { range: { startIndex: idx, endIndex: end - 1 },
+      textStyle: { italic: kind === "quote", foregroundColor: kind === "quote" ? grey(0.3) : grey(0) }, fields: "italic,foregroundColor" } });
     idx = end;
   }
   return reqs;
 }
-
-/** Dopisuje notatkę na końcu sekcji jej grupy. */
-export async function appendNote(docId, note) {
+async function oauthAppend(docId, note) {
   const doc = await call("GET", `${API}/${docId}`);
   const paras = paragraphs(doc);
   const group = (note.group || "Bez grupy").trim();
@@ -88,24 +117,16 @@ export async function appendNote(docId, note) {
   const hi = paras.findIndex((p) => p.style === "HEADING_2" && p.text.trim() === group);
   let insertAt = null;
   if (hi < 0) lines = [[group, "heading"], ...lines];
-  else {
-    const nxt = paras.slice(hi + 1).find((p) => ["HEADING_1", "HEADING_2", "TITLE"].includes(p.style));
-    insertAt = nxt ? nxt.start : null;
-  }
+  else { const nxt = paras.slice(hi + 1).find((p) => ["HEADING_1", "HEADING_2", "TITLE"].includes(p.style)); insertAt = nxt ? nxt.start : null; }
   let start, reqs;
   if (insertAt == null) {
     const last = paras[paras.length - 1];
     if (last.text === "") { start = last.start; reqs = [{ insertText: { location: { index: start }, text: lines.map((l) => l[0]).join("\n") } }]; }
     else { start = last.end; reqs = [{ insertText: { location: { index: last.end - 1 }, text: "\n" + lines.map((l) => l[0]).join("\n") } }]; }
-  } else {
-    start = insertAt;
-    reqs = [{ insertText: { location: { index: start }, text: lines.map((l) => l[0] + "\n").join("") } }];
-  }
+  } else { start = insertAt; reqs = [{ insertText: { location: { index: start }, text: lines.map((l) => l[0] + "\n").join("") } }]; }
   await batch(docId, [...reqs, ...styleRequests(start, lines)]);
 }
-
-/** Odtwarza cały dokument z notatek. */
-export async function rebuild(docId, title, notes) {
+async function oauthRebuild(docId, title, notes) {
   const doc = await call("GET", `${API}/${docId}`);
   const end = doc.body.content[doc.body.content.length - 1].endIndex;
   const reqs = [];
@@ -118,7 +139,52 @@ export async function rebuild(docId, title, notes) {
   await batch(docId, [...reqs, ...styleRequests(1, lines)]);
 }
 
-export function parseDocLink(raw) {
-  const m = raw.match(/\/d\/([A-Za-z0-9_-]{20,})/) || raw.trim().match(/^([A-Za-z0-9_-]{20,})$/);
-  return m ? m[1] : null;
+/* ------------------------------------------------------------------ wspólne API dla app.js
+   meta = {id, title, gdocId?, gdocUrl?}; funkcje zwracają {url} i mogą zaktualizować meta.gdocId / gdocUrl. */
+export async function ping() {
+  if (mode() === "script") return script("ping");
+  if (mode() === "oauth") { token = await googleToken(true); return { ok: true }; }
+  throw new Error("Nie skonfigurowano Google Docs");
+}
+
+export async function appendNote(meta, note) {
+  if (mode() === "script") {
+    const r = await script("append", { docKey: meta.id, title: meta.title, note });
+    meta.gdocUrl = r.url; meta.gdocId = r.docId || meta.gdocId;
+    return r;
+  }
+  if (mode() === "oauth") {
+    if (!meta.gdocId) meta.gdocId = await oauthCreateDoc(meta.title);
+    await oauthAppend(meta.gdocId, note);
+    meta.gdocUrl = docUrl(meta.gdocId);
+    return { url: meta.gdocUrl };
+  }
+  throw new Error("Nie skonfigurowano Google Docs");
+}
+
+export async function rebuild(meta, notes) {
+  if (mode() === "script") {
+    const r = await script("rebuild", { docKey: meta.id, title: meta.title, notes });
+    meta.gdocUrl = r.url; meta.gdocId = r.docId || meta.gdocId;
+    return r;
+  }
+  if (mode() === "oauth") {
+    if (!meta.gdocId) meta.gdocId = await oauthCreateDoc(meta.title);
+    await oauthRebuild(meta.gdocId, meta.title, notes);
+    meta.gdocUrl = docUrl(meta.gdocId);
+    return { url: meta.gdocUrl };
+  }
+  throw new Error("Nie skonfigurowano Google Docs");
+}
+
+export async function link(meta, raw) {
+  const id = parseDocLink(raw);
+  if (!id) throw new Error("To nie jest link do dokumentu Google Docs");
+  if (mode() === "script") {
+    const r = await script("link", { docKey: meta.id, docId: id });
+    meta.gdocUrl = r.url; meta.gdocId = id;
+    return r;
+  }
+  meta.gdocId = id; meta.gdocUrl = docUrl(id);
+  return { url: meta.gdocUrl };
 }

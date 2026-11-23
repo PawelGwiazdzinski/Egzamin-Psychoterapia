@@ -22,6 +22,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Link lektor://… (np. połączenie z Google Docs) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="lektor" />
+            </intent-filter>
+
             <!-- "Otwórz w Lektorze" / "Udostępnij do Lektora" -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

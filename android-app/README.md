@@ -2,91 +2,84 @@
 
 Darmowy czytnik PDF z głosem, w stylu Natural Reader, bez subskrypcji. Działa na telefonie, w tym na Galaxy S26+.
 
-* Otwierasz PDF w aplikacji albo z innej aplikacji: **Udostępnij → Lektor** lub **Otwórz za pomocą → Lektor** (Pliki, Gmail, Dysk).
-* Na stronie podświetla się czytane **zdanie** i bieżące **słowo**. Stuknięcie w zdanie zaczyna czytanie od tego miejsca. Przycisk ¶ przełącza na widok samego tekstu.
-* Czytanie trwa przy **wygaszonym ekranie**. W powiadomieniu jest przycisk „Pauza”.
-* **＋ Notatka** zatrzymuje czytanie i otwiera notatkę: cytat (możesz go rozszerzyć o sąsiednie zdania), twoja myśl i grupa.
-  Notatka zapisuje się na telefonie i w **Google Docs**: jeden dokument na czytaną pozycję, grupy to nagłówki.
-* Strony skanowane przechodzą przez OCR **ML Kit** na telefonie (offline). Opcjonalnie możesz użyć serwera **Unlimited-OCR**.
-* Lektor pamięta miejsce, w którym skończyłeś, w każdym dokumencie.
+## Instalacja
 
-## Głosy
+1. Na telefonie otwórz https://github.com/PawelGwiazdzinski/Egzamin-Psychoterapia/releases/latest i pobierz **Lektor.apk**.
+2. Otwórz plik i zezwól przeglądarce na instalowanie aplikacji.
+3. Przy pierwszym uruchomieniu zezwól na powiadomienia. Dzięki nim czytanie trwa przy wygaszonym ekranie.
 
-Lektor korzysta z głosów telefonu, czyli z **Usług Google do zamiany mowy**. Są darmowe, działają offline i mają dobrą jakość.
-Domyślnie wybiera głosy **męskie**: polski `pl-pl-x-bmg` (zapasowo `jmk`) i angielski `en-us-x-iom` (zapasowo `tpd`, `iol`).
-Inny głos wybierzesz w ⚙ (przycisk „▶ posłuchaj” pozwala go przesłuchać).
+Nowe wersje instalujesz tak samo, na starą. Biblioteka i notatki zostają.
 
-Na Samsungu domyślnym silnikiem jest Samsung TTS. Żeby mieć najlepsze głosy:
-1. Zainstaluj ze Sklepu Play **„Usługi Google do zamiany mowy”** („Speech Services by Google”), jeśli ich nie ma.
-2. W Lektorze otwórz ⚙ → **Pobierz / zmień głosy telefonu…**, wybierz silnik Google i pobierz **polski** oraz **angielski (USA)**.
+## Co umie
 
-Opcjonalnie możesz użyć **ElevenLabs**: wpisz w ⚙ swój klucz API. Powyżej darmowego limitu to usługa płatna.
-Ten silnik czyta tylko przy włączonym ekranie.
+* **PDF z telefonu:** otwierasz go w Lektorze albo przez *Udostępnij / Otwórz za pomocą → Lektor* (Pliki, Gmail, Dysk). Działa też wklejony tekst.
+* **Czytanie z podświetlaniem:** na stronie widać czytane **zdanie** i bieżące **słowo**. Stuknięcie w zdanie zaczyna czytanie od tego miejsca.
+  Strony powiększasz dwoma palcami, a przycisk ¶ przełącza na widok samego tekstu.
+* **Głosy męskie:**
+  * domyślnie **Marek** (PL) i **Andrew** (EN), neuronowe głosy Microsoft Edge. Są darmowe, ale wymagają internetu;
+  * bez internetu Lektor sam przełącza się na **głos telefonu** (Google: `bmg` po polsku, `iom` po angielsku), który działa offline.
+    Głosy pobierzesz w ⚙ → *Pobierz głosy offline*;
+  * opcjonalnie **ElevenLabs** na Twoim kluczu API (płatne powyżej darmowego limitu).
+* **Czytanie w tle:** przy wygaszonym ekranie. Sterujesz nim z ekranu blokady, z powiadomienia i przyciskami słuchawek.
+  Czytanie zatrzymuje się, gdy wyjmiesz słuchawki albo zadzwoni telefon.
+* **Ustawienia czytania:** tempo od 0,5× do 3×, timer snu, motywy (jasny, sepia, ciemny), rozmiar tekstu.
+* **Notatki:** stuknij **＋ Notatka**, a czytanie się zatrzyma. Dodajesz cytat (można go rozszerzyć o sąsiednie zdania), swoją myśl i grupę.
+  Notatki możesz edytować, usuwać i udostępniać jako tekst.
+* **Google Docs:** każda czytana pozycja dostaje dokument „Notatki – tytuł”, a grupy są w nim nagłówkami. Twoje ręczne zmiany w dokumencie zostają.
+* **Skany:** odczytuje je OCR **ML Kit** na telefonie, offline. Opcjonalnie możesz użyć serwera [Unlimited-OCR](https://github.com/baidu/Unlimited-OCR).
+* **Pamięć miejsca:** Lektor pamięta, gdzie skończyłeś, w każdym dokumencie.
 
-## Instalacja na telefonie
+## Google Docs: jednorazowa konfiguracja (ok. 2 minuty)
 
-APK buduje się automatycznie na GitHubie (workflow `.github/workflows/android.yml`) po każdej zmianie w `android-app/`.
+Notatki zapisuje mały skrypt **Google Apps Script** na Twoim koncie. Nie potrzebujesz Google Cloud Console ani kluczy.
+Najwygodniej zrobić to na komputerze:
 
-1. Na telefonie otwórz stronę **Releases** repozytorium. Najnowsze wydanie znajdziesz pod linkiem
-   `https://github.com/PawelGwiazdzinski/Egzamin-Psychoterapia/releases/latest`.
-   Pobierz **Lektor.apk**. Przy prywatnym repozytorium musisz być zalogowany do GitHuba w przeglądarce.
-2. Otwórz pobrany plik. Za pierwszym razem Android poprosi o zgodę na **instalowanie nieznanych aplikacji** z przeglądarki, więc ją wyraź.
-3. Kolejne wersje instalujesz tak samo, na starą. Biblioteka i notatki zostają.
+1. W Lektorze stuknij ⚙ → **Google Docs → Skonfiguruj** i wybierz **Wyślij sobie instrukcję z kodem** (np. na e-mail).
+   Kod skryptu jest też w repozytorium: [`www/lektor-docs.gs`](www/lektor-docs.gs).
+2. Na komputerze otwórz https://script.google.com/home/projects/create, usuń przykładowy kod, wklej skrypt i zapisz.
+3. Kliknij **Wdróż → Nowe wdrożenie → Aplikacja internetowa**. Ustaw *Wykonaj jako:* **Ja** i *Kto ma dostęp:* **Każdy**, potem **Wdróż**.
+   Zezwól na dostęp: przy ostrzeżeniu „Google nie zweryfikował tej aplikacji” wybierz *Zaawansowane → Otwórz*. To Twój własny skrypt.
+4. Skopiuj **adres aplikacji internetowej** i otwórz go na telefonie, a potem stuknij **Otwórz w Lektorze**.
+   Możesz też wkleić adres w Lektorze: ⚙ → Google Docs.
 
-## Google Docs: jednorazowa konfiguracja (ok. 5 minut)
+Adres skryptu działa jak hasło do Twoich notatek, więc nikomu go nie udostępniaj.
+Notatki zrobione przed konfiguracją wyślą się same po połączeniu.
 
-1. Wejdź na https://console.cloud.google.com/ i utwórz projekt, np. „Lektor”.
-2. W **APIs & Services → Library** włącz **Google Docs API** i **Google Drive API**.
-3. W **OAuth consent screen** wybierz typ *External*, wpisz nazwę i swój e-mail, a w **Test users** dodaj swój adres Gmail.
-   Żeby Google nie wylogowywał co 7 dni, kliknij później **Publish app**. Do własnego użytku weryfikacja nie jest potrzebna.
-4. W **Credentials** wybierz **Create credentials → OAuth client ID → Android**:
-   * Package name: `pl.lektor.app`
-   * SHA-1: `D7:83:43:62:64:00:F6:5F:AF:86:75:6D:8B:9F:A4:43:64:0D:20:94`
-5. W Lektorze otwórz ⚙ → **Połącz z Google Docs** i wybierz swoje konto.
+### Alternatywa: logowanie OAuth (zaawansowane)
 
-### Klucz podpisu (jednorazowo, przed pierwszym budowaniem)
+Zamiast skryptu możesz się zalogować kluczem OAuth z Google Cloud Console. Utwórz klient typu **Android**: pakiet `pl.lektor.app`,
+SHA-1 `D7:83:43:62:64:00:F6:5F:AF:86:75:6D:8B:9F:A4:43:64:0D:20:94`. Włącz też *Google Docs API*.
 
-Logowanie Google wymaga, żeby aplikacja była zawsze podpisana **tym samym kluczem**, bo Google sprawdza jego odcisk SHA-1.
-Klucz nie może leżeć w repozytorium, dlatego trzymamy go w **sekrecie GitHuba**:
+## Budowanie (dla programisty)
 
-1. W repozytorium otwórz **Settings → Secrets and variables → Actions → New repository secret**.
-2. Dodaj dwa sekrety:
-   * `LEKTOR_KEYSTORE_B64`: cała zawartość pliku `LEKTOR_KEYSTORE_B64.txt` (klucz zakodowany w base64, 1352 znaki; po zapisaniu budowanie wypisuje w logu długość, więc łatwo sprawdzić, czy nic się nie ucięło),
-   * `LEKTOR_KEYSTORE_PASSWORD`: hasło do klucza.
-3. Uruchom ponownie workflow **Lektor – Android APK** (zakładka Actions → Run workflow).
-
-Odcisk SHA-1 tego klucza to `D7:83:43:62:64:00:F6:5F:AF:86:75:6D:8B:9F:A4:43:64:0D:20:94` (wpisz go w kroku 4 powyżej).
-Własny klucz możesz też wygenerować poleceniem
-`keytool -genkeypair -keystore lektor.jks -storetype PKCS12 -alias lektor -keyalg EC -groupname secp256r1 -validity 10000` (to samo hasło dla magazynu i klucza),
-a potem zakodować go: `base64 -w0 lektor.jks`.
-Bez sekretu APK też się zbuduje, ale logowanie Google nie zadziała, a każdą nową wersję trzeba będzie instalować od nowa.
-
-## OCR: Unlimited-OCR (opcjonalnie)
-
-[Unlimited-OCR 2](https://github.com/baidu/Unlimited-OCR) wymaga karty NVIDIA, więc nie uruchomisz go na telefonie.
-Możesz postawić go na komputerze z GPU w tej samej sieci Wi-Fi (instrukcja w `reader/README.md`) i wpisać w ⚙ adres,
-np. `http://192.168.1.10:10000`. Bez tego skany odczytuje ML Kit na telefonie.
-
-## Budowanie lokalnie (dla programisty)
+APK buduje się automatycznie na GitHubie (`.github/workflows/android.yml`) po każdej zmianie w `android-app/`.
+Wynik trafia do *Releases*. Klucz podpisu jest w sekretach `LEKTOR_KEYSTORE_B64` i `LEKTOR_KEYSTORE_PASSWORD`.
 
 ```bash
 cd android-app
 npm install
-npm run sync              # kopiuje pdf.js i www/ do projektu Androida
+npm run sync                     # kopiuje pdf.js i www/ do projektu Androida
 cd android && ./gradlew assembleRelease
-# test w przeglądarce (bez funkcji natywnych):
-npx http-server www -p 8080
 ```
 
 Struktura:
 
 ```
-www/js/app.js        interfejs, odtwarzanie, notatki
+www/js/app.js        interfejs: biblioteka, widok stron/tekstu, zoom, notatki, ustawienia
 www/js/pdfdoc.js     pdf.js: słowa z pozycjami, nagłówki/stopki, render stron
 www/js/textproc.js   podział na zdania (PL/EN, skróty), wykrywanie języka
-www/js/speech.js     silniki mowy (Android TTS / ElevenLabs / przeglądarka), wybór głosu męskiego
-www/js/gdocs.js      zapis notatek w Google Docs
+www/js/speech.js     fasada odtwarzacza (natywny / ElevenLabs / przeglądarka), wybór głosu męskiego
+www/js/gdocs.js      notatki w Google Docs (Apps Script albo OAuth)
+www/lektor-docs.gs   skrypt Apps Script do wdrożenia na koncie Google
 www/js/ocr.js        ML Kit + Unlimited-OCR
-android/app/src/main/java/pl/lektor/app/LektorPlugin.java   TTS, OCR, logowanie Google, udostępnianie
-android/app/src/main/java/pl/lektor/app/TtsService.java     czytanie w tle (powiadomienie)
+android/.../Playback.java          kolejka zdań, fokus audio, MediaSession, powiadomienie
+android/.../EdgeTts.java           klient głosów Edge (WebSocket), SecMsGec.java – token
+android/.../EdgeSpeaker.java       odtwarzanie MP3 z wyprzedzeniem, pamięć podręczna, podświetlanie słów
+android/.../SystemTtsSpeaker.java  głosy telefonu (TextToSpeech)
+android/.../LektorPlugin.java      most JS ↔ Android, OCR, logowanie Google, pliki z zewnątrz
+android/.../TtsService.java        usługa pierwszoplanowa (czytanie w tle)
 ```
+
+Głosy Edge korzystają z nieoficjalnego interfejsu przeglądarki Microsoft Edge („Czytaj na głos”), tak jak biblioteka
+[edge-tts](https://github.com/rany2/edge-tts). Microsoft może go kiedyś zmienić. Wtedy Lektor czyta dalej głosem telefonu,
+a naprawa wymaga aktualizacji aplikacji.

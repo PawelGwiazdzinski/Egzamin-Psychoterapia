@@ -3,13 +3,15 @@ import { db, uid, prefs } from "./db.js";
 import { openPdf, extract, renderPage } from "./pdfdoc.js";
 import { fromPlainText, detectLang } from "./textproc.js";
 import { ocrPage } from "./ocr.js";
-import { ENGINES, ENGINE_LABEL, availableEngines, onSpeech, pickDefault, setRate as engineRate } from "./speech.js";
+import { player, availableEngines, ENGINE_LABEL } from "./speech.js";
 import * as gdocs from "./gdocs.js";
-import { Lektor, isNative } from "./native.js";
+import { Lektor, isNative, share, onBackButton, minimizeApp, openExternal } from "./native.js";
 
+const APP_VERSION = "1.1";
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 let toastT;
 function toast(html, ms = 3000) {
@@ -20,76 +22,105 @@ function toast(html, ms = 3000) {
   if (ms) toastT = setTimeout(() => (t.hidden = true), ms);
 }
 
-const BATCH = 25;
 const S = {
   id: null, meta: null, doc: null, pdf: null, notes: [],
-  view: prefs.get("view", "pages"),
-  idx: 0, playing: false, queuedTo: -1, session: 0,
-  engines: [], engine: prefs.get("engine", null),
-  lang: "pl", voices: [], voice: "",
-  rate: prefs.get("rate", 1),
-  follow: prefs.get("follow", true),
+  view: prefs.get("view", "pages"), zoom: prefs.get("zoom", 1),
+  idx: 0, playing: false, buffering: false, loadedDoc: null, loadedEngine: null,
+  engines: [], engine: null, lang: "pl", voices: [], voice: "",
+  rate: prefs.get("rate", 1), follow: prefs.get("follow", true), sleepEndsAt: 0,
   userScrollAt: 0, wordStarts: new Map(),
 };
 
 /* ================================================================ start */
 async function init() {
+  applyTheme(prefs.get("theme", "auto"));
   document.documentElement.style.setProperty("--fs", prefs.get("fontSize", 19) + "px");
-  bindUI();
-  S.engines = await availableEngines();
+  document.documentElement.style.setProperty("--zoom", S.zoom);
+  $("#appVersion").textContent = APP_VERSION;
+  S.engines = availableEngines();
+  S.engine = prefs.get("engine", null);
   if (!S.engines.includes(S.engine)) S.engine = S.engines[0];
-  onSpeech(onSpeechEvent);
+  bindUI();
+  player.on(onPlayerEvent);
   await renderLibrary();
   const last = prefs.get("lastDoc", null);
   if (last && (await db.get("meta", last))) await openDoc(last);
-  else openDrawer("library");
+  else { showEmpty(); await loadVoices(); }
   if (Lektor) {
     Lektor.addListener("sharedFile", (f) => importShared(f));
-    Lektor.addListener("media", (e) => (e.action === "pause" ? pause() : e.action === "play" ? toggle() : null));
-    window.Capacitor.Plugins.App?.addListener("backButton", onBack);
+    Lektor.addListener("appLink", (l) => onAppLink(l));
+    onBackButton(onBack);
+    syncPlayerState();
   }
+  if (gdocs.isConfigured()) setTimeout(syncPending, 4000);
 }
 
 function onBack() {
   const open = $$("dialog[open]");
   if (open.length) return open.at(-1).close();
   if (!$("#library").hidden || !$("#notes").hidden) return closeDrawers();
-  window.Capacitor.Plugins.App.minimizeApp();
+  minimizeApp();
+}
+
+async function syncPlayerState() {
+  try {
+    const st = await player.getState();
+    if (st) onPlayerEvent({ type: "state", ...st });
+  } catch { /* brak stanu */ }
 }
 
 /* ================================================================ biblioteka */
+async function allMetas() {
+  return (await db.all("meta")).sort((a, b) => (b.opened || b.created) - (a.opened || a.created));
+}
 async function renderLibrary() {
-  const metas = (await db.all("meta")).sort((a, b) => (b.opened || b.created) - (a.opened || a.created));
+  const metas = await allMetas();
   const ul = $("#docList");
-  if (!metas.length) { ul.innerHTML = `<li class="muted small">Biblioteka jest pusta.</li>`; return; }
+  if (!metas.length) { ul.innerHTML = `<li class="muted small" style="padding:12px">Biblioteka jest pusta.</li>`; return; }
   ul.innerHTML = metas.map((m) => {
     const pct = m.sentences ? Math.round((100 * (m.position || 0)) / m.sentences) : 0;
     return `<li data-id="${m.id}" class="${m.id === S.id ? "on" : ""}"><div class="t"><b>${esc(m.title)}</b>
       <span>${(m.lang || "").toUpperCase()} · ${m.pages ? m.pages + " str." : "tekst"} · ${pct}%</span><div class="bar"><i style="width:${pct}%"></i></div></div>
-      <button class="icon-btn del" aria-label="Usuń">✕</button></li>`;
+      <button class="icon-btn menu" aria-label="Więcej">⋯</button></li>`;
   }).join("");
 }
-
 $("#docList").addEventListener("click", async (e) => {
   const li = e.target.closest("li[data-id]");
   if (!li) return;
-  if (e.target.closest(".del")) {
-    const m = await db.get("meta", li.dataset.id);
-    if (!confirm(`Usunąć „${m.title}” i jego lokalne notatki? (Dokument w Google Docs zostaje.)`)) return;
-    if (S.id === m.id) { stopAll(); S.id = null; S.doc = null; showEmpty(); }
-    await db.removeDoc(m.id);
-    return renderLibrary();
-  }
+  const m = await db.get("meta", li.dataset.id);
+  if (!m) return;
+  if (e.target.closest(".menu")) return openDocMenu(m);
   closeDrawers();
-  openDoc(li.dataset.id);
+  openDoc(m.id);
 });
 
+let menuMeta = null;
+function openDocMenu(m) {
+  menuMeta = m;
+  $("#dmTitle").textContent = m.title;
+  $("#docMenu").showModal();
+}
+async function deleteDoc(m) {
+  if (!confirm(`Usunąć „${m.title}” i jego lokalne notatki? (Dokument w Google Docs zostaje.)`)) return;
+  if (S.id === m.id) { await player.stop().catch(() => {}); S.id = null; S.doc = null; S.loadedDoc = null; prefs.set("lastDoc", null); showEmpty(); }
+  await db.removeDoc(m.id);
+  renderLibrary();
+}
+async function renameDoc(m) {
+  const t = await ask("Nazwa dokumentu", m.title);
+  if (!t || t === m.title) return;
+  m.title = t;
+  await db.put("meta", m);
+  if (S.id === m.id) { S.meta.title = t; $("#docTitle").textContent = t; }
+  renderLibrary();
+}
+
+/* ================================================================ import */
 async function importFile(file) {
   const isText = /\.(txt|md)$/i.test(file.name) || file.type.startsWith("text/");
   const data = isText ? await file.text() : await file.arrayBuffer();
   return importData(file.name, data, isText);
 }
-
 function b64ToBytes(b64) {
   const bin = atob(b64);
   const u = new Uint8Array(bin.length);
@@ -97,14 +128,13 @@ function b64ToBytes(b64) {
   return u.buffer;
 }
 function importShared(f) {
+  if (!f) return;
   if (f.error) return toast("Nie udało się otworzyć pliku: " + esc(f.error), 6000);
   if (f.text) return importData(f.name || "Udostępniony tekst", f.text, true);
   if (f.data) return importData(f.name || "dokument.pdf", b64ToBytes(f.data), false);
 }
-
 async function importData(name, data, isText, title) {
   closeDrawers();
-  stopAll();
   const id = uid();
   toast("Wczytuję…", 0);
   try {
@@ -119,7 +149,7 @@ async function importData(name, data, isText, title) {
       doc = await extract(pdf, { progress: (m) => toast(esc(m), 0), ocr: ocrPage });
       pdf.destroy();
     }
-    if (!doc.sentences.length) throw new Error("Nie znaleziono tekstu (skan bez OCR?)");
+    if (!doc.sentences.length) throw new Error("Nie znaleziono tekstu. Jeśli to skan, OCR mógł się nie powieść.");
     const meta = { id, title: title || doc.title || name.replace(/\.[^.]+$/, ""), kind: isText ? "txt" : "pdf", created: Date.now(),
       position: 0, lang: doc.lang, pages: doc.pages.length, sentences: doc.sentences.length,
       ocrPages: doc.pages.filter((p) => p.source !== "text").length };
@@ -137,12 +167,12 @@ async function importData(name, data, isText, title) {
 
 /* ================================================================ otwieranie */
 function showEmpty() {
-  $("#empty").hidden = false; $("#pages").hidden = true; $("#textView").hidden = true;
+  $("#empty").hidden = false; $("#pages").hidden = true; $("#textView").hidden = true; $("#viewToggle").hidden = true;
   $("#docTitle").textContent = "Lektor";
+  $("#posLabel").textContent = ""; $("#progressFill").style.width = "0";
 }
-
 async function openDoc(id) {
-  stopAll();
+  if (S.id && S.id !== id && S.playing) await player.stop().catch(() => {});
   const meta = await db.get("meta", id);
   const doc = await db.get("docs", id);
   if (!meta || !doc) return showEmpty();
@@ -150,6 +180,7 @@ async function openDoc(id) {
   S.pdf = null;
   if (meta.kind === "pdf") S.pdf = await openPdf(new Uint8Array(await db.get("files", id)));
   S.id = id; S.meta = meta; S.doc = doc;
+  if (S.loadedDoc !== id) { S.loadedDoc = null; S.playing = false; }
   S.idx = Math.min(meta.position || 0, doc.sentences.length - 1);
   S.lang = meta.lang || "pl";
   S.wordStarts.clear();
@@ -165,25 +196,19 @@ async function openDoc(id) {
   await loadVoices();
   await loadNotes();
   updatePos();
+  setPlayIcon();
   renderLibrary();
 }
 
-/* ================================================================ widok stron */
-let pageObs, renderObs;
+/* ================================================================ widok stron + zoom */
+let pageObs;
 function buildPages() {
   const box = $("#pages");
   box.innerHTML = "";
   pageObs?.disconnect();
   if (!S.pdf) return;
   pageObs = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      const div = e.target;
-      if (e.isIntersecting && !div.dataset.rendered) {
-        div.dataset.rendered = "1";
-        const c = div.querySelector("canvas");
-        renderPage(S.pdf, +div.dataset.p, c, div.clientWidth).catch(() => { div.dataset.rendered = ""; });
-      }
-    }
+    for (const e of entries) if (e.isIntersecting) renderOne(e.target);
   }, { root: $("#viewport"), rootMargin: "1500px 0px" });
   S.doc.pages.forEach((p, i) => {
     const div = document.createElement("div");
@@ -195,18 +220,63 @@ function buildPages() {
     pageObs.observe(div);
   });
 }
+function renderOne(div) {
+  const w = div.clientWidth;
+  if (!w || div.dataset.w === String(w) || div.dataset.busy) return;
+  div.dataset.busy = "1";
+  renderPage(S.pdf, +div.dataset.p, div.querySelector("canvas"), w)
+    .then(() => { div.dataset.w = String(w); })
+    .catch(() => {})
+    .finally(() => { delete div.dataset.busy; });
+}
+function renderVisible() {
+  const vr = $("#viewport").getBoundingClientRect();
+  for (const div of $$(".page")) {
+    const r = div.getBoundingClientRect();
+    if (r.bottom > vr.top - 1200 && r.top < vr.bottom + 1200) renderOne(div);
+  }
+}
 let lastWidth = innerWidth;
 addEventListener("resize", () => {
-  if (Math.abs(innerWidth - lastWidth) < 40 || !S.pdf) return; // klawiatura nie zmienia szerokości
+  if (Math.abs(innerWidth - lastWidth) < 40 || !S.pdf) return;
   lastWidth = innerWidth;
-  $$(".page").forEach((d) => (d.dataset.rendered = ""));
-  buildPages();
-  highlight(true);
+  setTimeout(() => { renderVisible(); highlight(true); }, 50);
 });
+
+function setZoom(z, focal) {
+  z = clamp(z, 1, 3);
+  const vp = $("#viewport");
+  const r = z / S.zoom;
+  const fx = focal ? focal.x : vp.clientWidth / 2, fy = focal ? focal.y : vp.clientHeight / 2;
+  const sl = vp.scrollLeft, st = vp.scrollTop;
+  S.zoom = z;
+  document.documentElement.style.setProperty("--zoom", z.toFixed(3));
+  vp.scrollLeft = (sl + fx) * r - fx;
+  vp.scrollTop = (st + fy) * r - fy;
+}
+let pinch = null;
+const dist = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+function bindPinch() {
+  const vp = $("#viewport");
+  vp.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2 && S.view === "pages" && S.pdf) {
+      const r = vp.getBoundingClientRect();
+      pinch = { d: dist(e), z: S.zoom, x: (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top };
+    }
+  }, { passive: true });
+  vp.addEventListener("touchmove", (e) => {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    setZoom(pinch.z * dist(e) / pinch.d, pinch);
+  }, { passive: false });
+  const end = () => { if (!pinch) return; pinch = null; prefs.set("zoom", S.zoom); setTimeout(renderVisible, 80); };
+  vp.addEventListener("touchend", end);
+  vp.addEventListener("touchcancel", end);
+}
 
 $("#pages").addEventListener("click", (e) => {
   const div = e.target.closest(".page");
-  if (!div) return;
+  if (!div || pinch) return;
   const pno = +div.dataset.p, p = S.doc.pages[pno], r = div.getBoundingClientRect();
   const x = ((e.clientX - r.left) / r.width) * p.w, y = ((e.clientY - r.top) / r.height) * p.h;
   let best = -1, bestD = Infinity;
@@ -257,7 +327,6 @@ function drawPageHL() {
   }
   return first;
 }
-
 function drawWord(wi) {
   const s = S.doc?.sentences[S.idx];
   if (!s) return;
@@ -270,7 +339,7 @@ function drawWord(wi) {
       el.style.cssText = pct([w[2] - 1, w[3] - 1, w[4] + 1, w[5] + 1], S.doc.pages[w[1]]);
     }
   } else el?.remove();
-  const span = $(`#textView .s.cur`);
+  const span = $("#textView .s.cur");
   if (span) {
     span.querySelector(".w.cur")?.classList.remove("cur");
     span.querySelector(`.w[data-w="${wi}"]`)?.classList.add("cur");
@@ -300,7 +369,6 @@ $("#textView").addEventListener("click", (e) => {
   const s = e.target.closest(".s");
   if (s && !String(getSelection()).trim()) jumpTo(+s.dataset.i, true);
 });
-
 function renderTextCur() {
   const tv = $("#textView");
   const prev = tv.querySelector(".s.cur");
@@ -318,108 +386,183 @@ function highlight(force = false) {
   const tEl = renderTextCur();
   if (!force && (!S.follow || Date.now() - S.userScrollAt < 5000)) return;
   const vp = $("#viewport");
-  let y = null;
-  if (S.view === "pages" && hit) y = hit.div.offsetTop + (hit.b[1] / S.doc.pages[hit.p].h) * hit.div.offsetHeight;
-  else if (S.view === "text" && tEl) y = tEl.offsetTop;
+  let y = null, x = null;
+  if (S.view === "pages" && hit) {
+    const pr = S.doc.pages[hit.p];
+    y = hit.div.offsetTop + (hit.b[1] / pr.h) * hit.div.offsetHeight;
+    x = hit.div.offsetLeft + (hit.b[0] / pr.w) * hit.div.offsetWidth;
+  } else if (S.view === "text" && tEl) y = tEl.offsetTop;
   if (y == null) return;
   const top = vp.scrollTop, h = vp.clientHeight;
-  if (force || y < top + h * 0.1 || y > top + h * 0.7) vp.scrollTo({ top: y - h * 0.3, behavior: force ? "auto" : "smooth" });
+  const opts = { behavior: force ? "auto" : "smooth" };
+  if (force || y < top + h * 0.1 || y > top + h * 0.7) opts.top = y - h * 0.3;
+  if (x != null && S.zoom > 1 && (x < vp.scrollLeft + 20 || x > vp.scrollLeft + vp.clientWidth - 60)) opts.left = Math.max(0, x - 40);
+  if (opts.top != null || opts.left != null) vp.scrollTo(opts);
 }
-
 function setView(v, silent) {
   S.view = v;
   if (!silent && S.pdf) prefs.set("view", v);
   $("#pages").hidden = v !== "pages";
   $("#textView").hidden = v !== "text";
   $("#viewToggle").textContent = v === "pages" ? "¶" : "▤";
+  if (v === "pages") setTimeout(renderVisible, 0);
   highlight(true);
 }
-
 function updatePos() {
   if (!S.doc) return;
   const n = S.doc.sentences.length, s = S.doc.sentences[S.idx];
-  $("#posLabel").textContent = S.pdf ? `s. ${s.page + 1}/${S.doc.pages.length}` : `${Math.round((100 * (S.idx + 1)) / n)}%`;
+  let label = S.pdf ? `s. ${s.page + 1}/${S.doc.pages.length}` : `${Math.round((100 * (S.idx + 1)) / n)}%`;
+  if (S.sleepEndsAt > Date.now()) label += ` · 🌙 ${Math.ceil((S.sleepEndsAt - Date.now()) / 60000)} min`;
+  $("#posLabel").textContent = label;
   $("#progressFill").style.width = `${(100 * (S.idx + 1)) / n}%`;
-  if (updatePos.t) return; // zapis co najwyżej raz na 1,5 s
-  updatePos.t = setTimeout(async () => {
-    updatePos.t = null;
-    if (!S.meta) return;
-    S.meta.position = S.idx;
-    await db.put("meta", S.meta);
-  }, 1500);
+  if (updatePos.t) return;
+  updatePos.t = setTimeout(() => { updatePos.t = null; savePos(); }, 1500);
+}
+function savePos() {
+  if (!S.meta) return;
+  S.meta.position = S.idx;
+  db.put("meta", S.meta).catch(() => {});
 }
 
-/* ================================================================ głosy */
+/* ================================================================ głosy i ustawienia */
 async function loadVoices() {
-  try { S.voices = await ENGINES[S.engine].voices(S.lang); } catch { S.voices = []; }
+  try { S.voices = await player.voices(S.engine, S.lang); } catch { S.voices = []; }
   const saved = prefs.get(`voice.${S.engine}.${S.lang}`, "");
-  S.voice = S.voices.some((v) => v.id === saved) ? saved : pickDefault(S.voices, S.lang);
+  S.voice = S.voices.some((v) => v.id === saved) ? saved : player.pickDefault(S.voices, S.lang, S.engine);
   renderSettings();
 }
+const locale = () => (S.lang === "pl" ? "pl-PL" : "en-US");
 
 function renderSettings() {
   $("#engineSel").innerHTML = S.engines.map((e) => `<option value="${e}" ${e === S.engine ? "selected" : ""}>${ENGINE_LABEL[e]}</option>`).join("");
   $("#voiceSel").innerHTML = S.voices.length
     ? S.voices.map((v) => `<option value="${esc(v.id)}" ${v.id === S.voice ? "selected" : ""}>${esc(v.label)}</option>`).join("")
-    : `<option value="">${S.engine === "elevenlabs" ? "(wpisz klucz API)" : "(brak głosów – pobierz w ustawieniach telefonu)"}</option>`;
+    : `<option value="">(brak głosów)</option>`;
+  const hint = $("#voiceHint");
+  if (S.engine === "edge") hint.textContent = "Głosy Edge są neuronowe i bardzo naturalne, ale wymagają internetu. Bez sieci Lektor sam przełączy się na głos telefonu.";
+  else if (S.engine === "system") hint.textContent = S.voices.length
+    ? "Głosy telefonu działają offline. Najlepsze są głosy Google (męskie: bmg / jmk po polsku, iom / tpd po angielsku)."
+    : "Brak głosu w tym języku. Stuknij „Pobierz głosy offline (Google)” i pobierz polski oraz angielski (USA).";
+  else if (S.engine === "elevenlabs") hint.textContent = S.voices.length ? "Głosy z Twojego konta ElevenLabs." : "Wpisz klucz API ElevenLabs w sekcji Zaawansowane.";
+  else hint.textContent = "";
   $$("#langSeg button").forEach((b) => b.classList.toggle("on", b.dataset.lang === S.lang));
   $("#rate").value = S.rate;
   $("#rateOut").textContent = S.rate.toFixed(2) + "×";
   $("#rateBtn").textContent = +S.rate.toFixed(2) + "×";
   $("#fontSize").value = prefs.get("fontSize", 19);
   $("#follow").checked = S.follow;
+  $("#themeSel").value = prefs.get("theme", "auto");
   $("#uocrUrl").value = prefs.get("uocrUrl", "");
   $("#elevenKey").value = localStorage.getItem("lektor.elevenKey") || "";
+  $("#installVoicesBtn").hidden = !isNative;
   $("#ttsSettings").hidden = !isNative;
   renderGoogle();
 }
+function applyTheme(v) {
+  if (v === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.dataset.theme = v;
+}
 
 /* ================================================================ odtwarzanie */
-const engine = () => ENGINES[S.engine];
-const opts = () => ({ voice: S.voice, lang: S.lang, rate: S.rate, title: S.meta?.title || "" });
-const items = (from, to) => S.doc.sentences.slice(from, to + 1).map((s, k) => ({ id: String(from + k), text: s.text }));
-
-function setPlayIcon(loading = false) {
-  $("#playBtn").textContent = S.playing ? "⏸" : "▶";
-  $("#playBtn").classList.toggle("loading", loading);
+function setPlayIcon() {
+  $("#playBtn .play-ico").textContent = S.playing ? "⏸" : "▶";
+  $("#playBtn").classList.toggle("loading", S.playing && S.buffering);
+  $("#playBtn").setAttribute("aria-label", S.playing ? "Pauza" : "Czytaj");
 }
-
-async function playFrom(i) {
-  if (!S.doc) return;
-  S.idx = Math.max(0, Math.min(i, S.doc.sentences.length - 1));
-  S.playing = true;
-  S.session++;
-  S.userScrollAt = 0;
-  S.queuedTo = Math.min(S.doc.sentences.length - 1, S.idx + BATCH - 1);
-  setPlayIcon(true);
-  highlight();
-  updatePos();
-  try { await engine().play(items(S.idx, S.queuedTo), opts()); }
-  catch (e) { pause(); toast("Błąd mowy: " + esc(e.message || e), 6000); }
+function effectiveEngine() {
+  if (S.engine === "edge" && navigator.onLine === false && S.engines.includes("system")) {
+    toast("Brak internetu – czytam głosem telefonu", 3000);
+    return "system";
+  }
+  return S.engine;
 }
-
-function onSpeechEvent(e) {
-  if (!S.playing || !S.doc) return;
-  const i = +e.id;
-  if (e.type === "start") {
-    setPlayIcon(false);
-    if (i !== S.idx) { S.idx = i; highlight(); updatePos(); }
-  } else if (e.type === "range") {
-    if (i !== S.idx) { S.idx = i; highlight(); updatePos(); }
-    drawWord(wordAt(i, e.start));
-  } else if (e.type === "done") {
-    if (i >= S.doc.sentences.length - 1) { pause(); toast("Koniec dokumentu"); return; }
-    if (i >= S.queuedTo - 8 && S.queuedTo < S.doc.sentences.length - 1) {
-      const from = S.queuedTo + 1;
-      S.queuedTo = Math.min(S.doc.sentences.length - 1, from + BATCH - 1);
-      engine().enqueue(items(from, S.queuedTo), opts());
-    }
-  } else if (e.type === "error") {
-    pause();
-    toast("Błąd mowy: " + esc(e.message || "nieznany") + "<br><small>Sprawdź głosy w ⚙ ustawieniach.</small>", 7000);
+async function loadIntoPlayer(i, autoplay = true) {
+  const engine = effectiveEngine();
+  const items = S.doc.sentences.map((s, k) => ({ id: String(k), text: s.text }));
+  S.loadedDoc = S.id; S.loadedEngine = engine;
+  S.idx = i;
+  if (autoplay) { S.playing = true; setPlayIcon(); highlight(); updatePos(); }
+  try {
+    await player.load({ items, index: i, engine, voice: engine === S.engine ? S.voice : "", locale: locale(), rate: S.rate, title: S.meta.title, autoplay });
+  } catch (e) {
+    S.playing = false; S.loadedDoc = null; setPlayIcon();
+    toast("Nie udało się uruchomić czytania: " + esc(e.message || e), 6000);
   }
 }
-
+const needsLoad = () => S.loadedDoc !== S.id || S.loadedEngine !== effectiveEngine();
+async function playFrom(i) {
+  if (!S.doc) return;
+  i = clamp(i, 0, S.doc.sentences.length - 1);
+  S.userScrollAt = 0;
+  if (needsLoad()) return loadIntoPlayer(i, true);
+  S.idx = i; S.playing = true; setPlayIcon(); highlight(); updatePos();
+  await player.seek(i);
+  await player.play();
+}
+async function toggle() {
+  if (!S.doc) return;
+  if (S.playing) { await player.pause(); S.playing = false; setPlayIcon(); savePos(); return; }
+  if (!needsLoad()) {
+    const st = await player.getState().catch(() => null);
+    if (st && st.index === S.idx) { S.playing = true; setPlayIcon(); await player.play(); return; }
+  }
+  playFrom(S.idx);
+}
+async function jumpTo(i, play = false) {
+  if (!S.doc) return;
+  i = clamp(i, 0, S.doc.sentences.length - 1);
+  if (S.playing || play) return playFrom(i);
+  S.idx = i; highlight(true); updatePos();
+  if (!needsLoad()) player.seek(i).catch(() => {});
+}
+function setRate(r) {
+  S.rate = Math.round(clamp(r, 0.5, 3) * 100) / 100;
+  prefs.set("rate", S.rate);
+  renderSettings();
+  if (!needsLoad()) player.setRate(S.rate).catch(() => {});
+}
+async function onVoiceChanged() {
+  prefs.set(`voice.${S.engine}.${S.lang}`, S.voice);
+  if (needsLoad()) { if (S.playing) playFrom(S.idx); return; }
+  const ok = await player.setVoice(S.engine, S.voice, locale()).catch(() => false);
+  if (!ok && S.playing) playFrom(S.idx); else if (!ok) S.loadedDoc = null;
+}
+async function onEngineChanged(e) {
+  S.engine = e;
+  prefs.set("engine", e);
+  await loadVoices();
+  S.loadedEngine = null;
+  if (S.playing) playFrom(S.idx);
+}
+function onPlayerEvent(e) {
+  if (e.type === "state") {
+    const docLoaded = S.loadedDoc === S.id && S.doc;
+    S.playing = !!e.playing; S.buffering = !!e.buffering; S.sleepEndsAt = e.sleepEndsAt || 0;
+    if (docLoaded && typeof e.index === "number" && e.index >= 0 && e.index !== S.idx) { S.idx = e.index; highlight(); updatePos(); }
+    setPlayIcon();
+    if (e.fallback) {
+      S.engine = "system"; S.loadedEngine = "system";
+      loadVoices();
+      toast("Głosy Edge niedostępne (" + esc(e.message || "brak internetu") + ") – czytam głosem telefonu.", 6000);
+    }
+    if (e.sleep) toast("🌙 Timer snu: czytanie wstrzymane");
+    if (e.finished && docLoaded) { toast("Koniec dokumentu"); savePos(); }
+    if (!e.playing) savePos();
+    return;
+  }
+  if (S.loadedDoc !== S.id || !S.doc) return;
+  if (e.type === "start") {
+    const i = typeof e.index === "number" ? e.index : +e.id;
+    S.playing = true; S.buffering = false; setPlayIcon();
+    if (i !== S.idx) { S.idx = i; highlight(); updatePos(); } else highlight();
+  } else if (e.type === "range") {
+    const i = typeof e.index === "number" ? e.index : +e.id;
+    if (i === S.idx) drawWord(wordAt(i, e.start));
+  } else if (e.type === "error") {
+    S.playing = false; S.buffering = false; setPlayIcon();
+    toast("Błąd czytania: " + esc(e.message || "nieznany") + '<br><small>Sprawdź głos w ⚙ ustawieniach.</small>', 7000);
+  }
+}
 function wordAt(i, charPos) {
   let st = S.wordStarts.get(i);
   if (!st) {
@@ -434,42 +577,18 @@ function wordAt(i, charPos) {
   return wi;
 }
 
-function pause() {
-  S.playing = false;
-  S.session++;
-  try { engine()?.stop(); } catch {}
-  setPlayIcon(false);
-}
-const stopAll = () => { if (S.playing) pause(); };
-function toggle() { if (!S.doc) return; S.playing ? pause() : playFrom(S.idx); }
-function jumpTo(i, play = false) {
-  if (!S.doc) return;
-  if (S.playing || play) return playFrom(i);
-  S.idx = Math.max(0, Math.min(i, S.doc.sentences.length - 1));
-  highlight(true);
-  updatePos();
-}
-
-function setRate(r) {
-  S.rate = Math.round(Math.min(3, Math.max(0.5, r)) * 100) / 100;
-  prefs.set("rate", S.rate);
-  renderSettings();
-  engineRate(S.engine, S.rate);
-  if (S.playing && S.engine !== "elevenlabs") { clearTimeout(setRate.t); setRate.t = setTimeout(() => playFrom(S.idx), 350); }
-}
-
 /* ================================================================ notatki */
 async function loadNotes() {
   S.notes = (await db.notesOf(S.id)).sort((a, b) => a.created - b.created);
   renderNotes();
 }
 const groups = () => [...new Set(S.notes.map((n) => n.group))];
-
 function renderNotes() {
   const list = $("#noteList");
-  const gd = S.meta?.gdocId;
-  $("#gdocLink").hidden = !gd;
-  if (gd) $("#gdocLink").href = gdocs.docUrl(gd);
+  const url = S.meta?.gdocUrl || (S.meta?.gdocId ? gdocs.docUrl(S.meta.gdocId) : null);
+  $("#gdocLink").hidden = !url;
+  if (url) $("#gdocLink").href = url;
+  $("#gdocNone").hidden = !!url || gdocs.isConfigured();
   $("#notesCount").hidden = !S.notes.length;
   $("#notesCount").textContent = S.notes.length;
   if (!S.notes.length) list.innerHTML = `<div class="empty-notes">Brak notatek.<br>Podczas słuchania stuknij „＋ Notatka”.</div>`;
@@ -484,10 +603,9 @@ function renderNotes() {
   }
   $("#groupList").innerHTML = groups().map((g) => `<option value="${esc(g)}">`).join("");
   const noted = new Set();
-  for (const n of S.notes) if (n.from != null) for (let i = n.from; i <= n.to; i++) noted.add(i);
+  for (const n of S.notes) if (n.from != null) for (let i = n.from; i <= (n.to ?? n.from); i++) noted.add(i);
   $$("#textView .s").forEach((el) => el.classList.toggle("noted", noted.has(+el.dataset.i)));
 }
-
 $("#noteList").addEventListener("click", async (e) => {
   const q = e.target.closest("q[data-s]");
   if (q && q.dataset.s !== "") { closeDrawers(); return jumpTo(+q.dataset.s); }
@@ -497,29 +615,35 @@ $("#noteList").addEventListener("click", async (e) => {
   if (b.dataset.act === "del") {
     if (!confirm("Usunąć notatkę? (W Google Docs: ⋯ → Przebuduj dokument.)")) return;
     await db.del("notes", n.id);
-  } else {
-    const thought = prompt("Twoja myśl:", n.thought); if (thought === null) return;
-    const group = prompt("Grupa:", n.group); if (group === null) return;
-    Object.assign(n, { thought: thought.trim(), group: group.trim() || "Bez grupy", synced: false });
-    await db.put("notes", n);
-    toast("Zmieniono. Aby odświeżyć Google Docs: ⋯ → Przebuduj.", 4000);
-  }
-  loadNotes();
+    loadNotes();
+  } else openComposer(n);
 });
 
-const C = { from: 0, to: 0, wasPlaying: false };
-function openComposer() {
+const C = { from: 0, to: 0, wasPlaying: false, editing: null };
+function openComposer(editNote = null) {
   if (!S.doc) return toast("Najpierw otwórz dokument");
+  C.editing = editNote;
   C.wasPlaying = S.playing;
-  pause();
-  const sel = String(getSelection()).trim();
-  C.from = C.to = S.idx;
-  $("#qText").textContent = sel || S.doc.sentences[S.idx].text;
-  $("#thought").value = "";
-  const lg = prefs.get("group." + S.id, "");
-  $("#group").value = lg;
-  $("#groupChips").innerHTML = groups().slice(-8).map((g) => `<button type="button" class="chip ${g === lg ? "on" : ""}">${esc(g)}</button>`).join("");
+  if (S.playing) { player.pause(); S.playing = false; setPlayIcon(); }
+  if (editNote) {
+    C.from = editNote.from ?? S.idx; C.to = editNote.to ?? C.from;
+    $("#qText").textContent = editNote.quote || "";
+    $("#thought").value = editNote.thought || "";
+    $("#group").value = editNote.group || "";
+    $("#composerTitle").textContent = "EDYCJA NOTATKI";
+  } else {
+    const sel = String(getSelection()).trim();
+    C.from = C.to = S.idx;
+    $("#qText").textContent = sel || S.doc.sentences[S.idx].text;
+    $("#thought").value = "";
+    $("#group").value = prefs.get("group." + S.id, "");
+    $("#composerTitle").textContent = "CYTAT";
+  }
+  $("#resumeWrap").hidden = !C.wasPlaying;
+  const cur = $("#group").value;
+  $("#groupChips").innerHTML = groups().slice(-8).map((g) => `<button type="button" class="chip ${g === cur ? "on" : ""}">${esc(g)}</button>`).join("");
   $("#composer").showModal();
+  if (!editNote) $("#thought").focus();
 }
 function extendQuote(d) {
   if (d < 0 && C.from > 0) C.from--;
@@ -532,40 +656,85 @@ async function saveNote() {
   stopDictation();
   if (!quote && !thought) return;
   prefs.set("group." + S.id, group);
+  if (C.editing) {
+    Object.assign(C.editing, { quote, thought, group, synced: false, edited: true });
+    await db.put("notes", C.editing);
+    await loadNotes();
+    toast(gdocs.isConfigured() ? "Zmieniono. W Google Docs odświeżysz to przez ⋯ → Przebuduj dokument." : "Zmieniono.", 4500);
+    if (C.wasPlaying && $("#resumeAfter").checked) resumeAfterNote();
+    return;
+  }
   const note = { id: uid(), doc: S.id, created: Date.now(), quote, thought, group,
     page: S.pdf ? S.doc.sentences[C.from].page : null, from: C.from, to: C.to, synced: false };
   await db.put("notes", note);
   await loadNotes();
-  if (C.wasPlaying && $("#resumeAfter").checked) playFrom(S.idx);
+  if (C.wasPlaying && $("#resumeAfter").checked) resumeAfterNote();
   pushNote(note);
 }
-
-async function ensureGdoc() {
-  if (!S.meta.gdocId) { S.meta.gdocId = await gdocs.createDoc(S.meta.title); await db.put("meta", S.meta); }
-  return S.meta.gdocId;
+function resumeAfterNote() {
+  if (needsLoad()) playFrom(S.idx);
+  else { S.playing = true; setPlayIcon(); player.play(); }
 }
 async function pushNote(note) {
-  if (!prefs.get("google", false)) { toast("Zapisano lokalnie. Połącz Google Docs w ⚙ ustawieniach."); return; }
+  if (!gdocs.isConfigured()) {
+    toast('Zapisano na telefonie. <button id="toastSetup">Włącz Google Docs</button>', 6000);
+    $("#toastSetup").onclick = () => { $("#toast").hidden = true; openGdocsSetup(); };
+    return;
+  }
   try {
-    await gdocs.appendNote(await ensureGdoc(), note);
+    await gdocs.appendNote(S.meta, note);
+    await db.put("meta", S.meta);
     note.synced = true;
     await db.put("notes", note);
     toast(`Zapisano w Google Docs ✓`, 2000);
   } catch (e) {
-    toast("Zapisano lokalnie. Google Docs: " + esc(e.message || e), 6000);
+    toast("Zapisano na telefonie. Google Docs: " + esc(e.message || e), 6000);
   }
   if (note.doc === S.id) loadNotes();
 }
+async function syncPending() {
+  if (!gdocs.isConfigured()) return;
+  const pending = (await db.all("notes")).filter((x) => !x.synced && !x.edited);
+  for (const n of pending) {
+    const m = await db.get("meta", n.doc);
+    if (!m) continue;
+    try {
+      await gdocs.appendNote(m, n);
+      await db.put("meta", m);
+      if (S.meta?.id === m.id) Object.assign(S.meta, { gdocId: m.gdocId, gdocUrl: m.gdocUrl });
+      n.synced = true;
+      await db.put("notes", n);
+    } catch { break; }
+  }
+  if (S.id) loadNotes();
+}
+function notesMarkdown(meta, notes) {
+  const by = new Map();
+  for (const n of notes) (by.get(n.group) || by.set(n.group, []).get(n.group)).push(n);
+  let md = `# Notatki – ${meta?.title || ""}\n\n`;
+  for (const [g, ns] of by) {
+    md += `## ${g}\n\n`;
+    for (const n of ns) { if (n.quote) md += `> „${n.quote}”${n.page != null ? ` — s. ${n.page + 1}` : ""}\n\n`; if (n.thought) md += n.thought + "\n\n"; }
+  }
+  return md;
+}
+async function shareNotes(meta) {
+  const notes = meta.id === S.id ? S.notes : (await db.notesOf(meta.id)).sort((a, b) => a.created - b.created);
+  if (!notes.length) return toast("Brak notatek do udostępnienia");
+  try {
+    const r = await share({ title: `Notatki – ${meta.title}`, text: notesMarkdown(meta, notes) });
+    if (r?.clipboard) toast("Skopiowano do schowka ✓");
+  } catch { /* anulowano */ }
+}
 
-/* dyktowanie (Chrome/WebView z rozpoznawaniem mowy Google) */
+/* dyktowanie */
 let rec = null;
 function toggleDictation() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return toast("Użyj mikrofonu na klawiaturze (Gboard / Samsung) – przycisk 🎤.", 4000);
+  if (!SR) return toast("Użyj mikrofonu na klawiaturze (przycisk 🎤).", 4000);
   if (rec) return stopDictation();
   rec = new SR();
-  rec.lang = S.lang === "en" ? "en-US" : "pl-PL";
-  rec.continuous = true; rec.interimResults = true;
+  rec.lang = locale(); rec.continuous = true; rec.interimResults = true;
   const ta = $("#thought"), base = ta.value ? ta.value.replace(/\s*$/, " ") : "";
   let fin = "";
   rec.onresult = (ev) => {
@@ -573,54 +742,93 @@ function toggleDictation() {
     for (let i = ev.resultIndex; i < ev.results.length; i++) ev.results[i].isFinal ? (fin += ev.results[i][0].transcript) : (tmp += ev.results[i][0].transcript);
     ta.value = base + fin + tmp;
   };
-  rec.onerror = () => { stopDictation(); toast("Użyj mikrofonu na klawiaturze – przycisk 🎤.", 4000); };
+  rec.onerror = () => { stopDictation(); toast("Użyj mikrofonu na klawiaturze (przycisk 🎤).", 4000); };
   rec.onend = stopDictation;
-  rec.start();
-  $("#dictate").classList.add("on");
+  try { rec.start(); $("#dictate").classList.add("on"); } catch { rec = null; }
 }
 function stopDictation() { if (rec) { rec.onend = null; try { rec.stop(); } catch {} } rec = null; $("#dictate").classList.remove("on"); }
 
-/* ================================================================ Google */
+/* ================================================================ Google Docs */
 function renderGoogle() {
-  const on = prefs.get("google", false);
-  $("#googleBox").innerHTML = on
-    ? `<div class="gstatus"><span class="dot ok"></span>Połączono z Google Docs<span class="spacer"></span><button type="button" class="chip" id="gOut">rozłącz</button></div>`
-    : `<button type="button" class="accent" id="gIn">Połącz z Google Docs</button>
-       <p class="hint">Notatki trafią do dokumentu „Notatki – &lt;tytuł&gt;” na Twoim Dysku Google.</p>`;
-  $("#gIn")?.addEventListener("click", async () => {
-    try { await gdocs.connect(); prefs.set("google", true); toast("Połączono z Google ✓"); renderGoogle(); syncPending(); }
-    catch (e) { toast("Logowanie Google nieudane: " + esc(e.message || e), 8000); }
-  });
-  $("#gOut")?.addEventListener("click", () => { prefs.set("google", false); gdocs.disconnect(); renderGoogle(); });
-}
-async function syncPending() {
-  for (const n of (await db.all("notes")).filter((x) => !x.synced)) {
-    const m = await db.get("meta", n.doc);
-    if (!m) continue;
-    try {
-      if (!m.gdocId) { m.gdocId = await gdocs.createDoc(m.title); await db.put("meta", m); if (S.meta?.id === m.id) S.meta.gdocId = m.gdocId; }
-      await gdocs.appendNote(m.gdocId, n);
-      n.synced = true;
-      await db.put("notes", n);
-    } catch { break; }
+  const box = $("#googleBox");
+  const m = gdocs.mode();
+  if (m === "script" && gdocs.isConfigured()) {
+    box.innerHTML = `<div class="gstatus"><span class="dot ok"></span>Połączono (skrypt na Twoim koncie Google)
+      <span class="spacer"></span><button type="button" class="chip" id="gTest">sprawdź</button><button type="button" class="chip" id="gOut">rozłącz</button></div>`;
+  } else if (m === "oauth") {
+    box.innerHTML = `<div class="gstatus"><span class="dot ok"></span>Zalogowano do Google (OAuth)<span class="spacer"></span><button type="button" class="chip" id="gOut">rozłącz</button></div>`;
+  } else {
+    box.innerHTML = `<div class="gstatus"><span class="dot"></span>Nieskonfigurowane<span class="spacer"></span>
+      <button type="button" class="accent" id="gSetup">Skonfiguruj (2 min)</button></div>
+      <p class="hint">Bez tego notatki zostają tylko na telefonie (możesz je udostępnić jako tekst).</p>`;
   }
-  if (S.id) loadNotes();
+  $("#gSetup")?.addEventListener("click", () => { $("#settings").close(); openGdocsSetup(); });
+  $("#gOut")?.addEventListener("click", () => { gdocs.disconnect(); renderGoogle(); renderNotes(); });
+  $("#gTest")?.addEventListener("click", async () => {
+    toast("Sprawdzam…", 0);
+    try { const r = await gdocs.ping(); toast(`Działa ✓ ${r.email ? "(" + esc(r.email) + ")" : ""}`); }
+    catch (e) { toast("Błąd: " + esc(e.message || e), 7000); }
+  });
+}
+function openGdocsSetup() {
+  $("#gsUrl").value = prefs.get("scriptUrl", "");
+  $("#gsStatus").textContent = gdocs.isConfigured() ? "Połączono ✓" : "";
+  $("#gdocsSetup").showModal();
+}
+async function connectScript(raw) {
+  const url = gdocs.parseScriptUrl(raw);
+  if (!url) { toast("To nie wygląda na adres skryptu (powinien kończyć się na /exec).", 5000); return false; }
+  const prevMode = gdocs.mode(), prevUrl = prefs.get("scriptUrl", "");
+  gdocs.setScript(url);
+  $("#gsStatus").textContent = "Sprawdzam…";
+  toast("Sprawdzam połączenie…", 0);
+  try {
+    const r = await gdocs.ping();
+    $("#gsStatus").textContent = "Połączono ✓";
+    toast(`Połączono z Google Docs ✓${r.email ? " (" + esc(r.email) + ")" : ""}`, 4000);
+    renderGoogle(); renderNotes();
+    syncPending();
+    return true;
+  } catch (e) {
+    prefs.set("gdocsMode", prevMode); prefs.set("scriptUrl", prevUrl);
+    $("#gsStatus").textContent = "";
+    toast("Nie udało się połączyć: " + esc(e.message || e) + "<br><small>Sprawdź, czy wdrożenie ma „Kto ma dostęp: Każdy”.</small>", 9000);
+    return false;
+  }
+}
+function onAppLink(l) {
+  if (!l) return;
+  const u = l.u || l.url?.match(/[?&]u=([^&]+)/)?.[1];
+  if (l.host === "connect" && u) connectScript(decodeURIComponent(u));
+}
+async function scriptCode() {
+  const r = await fetch("lektor-docs.gs");
+  return r.text();
 }
 
-/* ================================================================ UI */
-function openDrawer(which) {
-  closeDrawers();
-  $("#" + which).hidden = false;
-  $("#scrim").hidden = false;
+/* ================================================================ okna pomocnicze */
+function ask(title, value = "") {
+  return new Promise((res) => {
+    const d = $("#askDlg");
+    $("#askTitle").textContent = title;
+    $("#askInput").value = value;
+    const done = () => { d.removeEventListener("close", done); res(d.returnValue === "ok" ? $("#askInput").value.trim() : null); };
+    d.addEventListener("close", done);
+    d.showModal();
+    $("#askInput").focus(); $("#askInput").select();
+  });
 }
+function openDrawer(which) { closeDrawers(); $("#" + which).hidden = false; $("#scrim").hidden = false; }
 function closeDrawers() { $("#library").hidden = $("#notes").hidden = $("#scrim").hidden = true; $("#gdocOptions").hidden = true; }
 
+/* ================================================================ UI */
 function bindUI() {
+  bindPinch();
   $("#playBtn").onclick = toggle;
   $("#nextBtn").onclick = () => jumpTo(S.idx + 1);
   $("#prevBtn").onclick = () => jumpTo(S.idx - 1);
-  $("#noteBtn").onclick = openComposer;
-  $("#rateBtn").onclick = () => { const steps = [0.8, 1, 1.2, 1.4, 1.6, 1.8, 2, 2.5]; setRate(steps.find((x) => x > S.rate + 0.01) || steps[0]); };
+  $("#noteBtn").onclick = () => openComposer();
+  $("#rateBtn").onclick = () => { const steps = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2]; setRate(steps.find((x) => x > S.rate + 0.01) || steps[0]); };
   $("#settingsBtn").onclick = () => { renderSettings(); $("#settings").showModal(); };
   $("#viewToggle").onclick = () => setView(S.view === "pages" ? "text" : "pages");
   $("#libOpen").onclick = () => openDrawer("library");
@@ -628,38 +836,46 @@ function bindUI() {
   $("#scrim").onclick = closeDrawers;
   $$(".drawer .close").forEach((b) => (b.onclick = closeDrawers));
   $$(".fileInput").forEach((inp) => (inp.onchange = (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) importFile(f); }));
+  $$(".pasteBtn").forEach((b) => (b.onclick = () => { closeDrawers(); $("#pasteDlg").showModal(); }));
+  $("#welcomeVoices").onclick = () => Lektor ? Lektor.installVoices() : toast("Na telefonie otworzy się pobieranie głosów Google.");
+  $("#welcomeDocs").onclick = openGdocsSetup;
   $("#progress").onclick = (e) => {
     if (!S.doc) return;
     const r = e.currentTarget.getBoundingClientRect();
     jumpTo(Math.floor(((e.clientX - r.left) / r.width) * S.doc.sentences.length));
   };
   const vp = $("#viewport");
-  ["touchmove", "wheel"].forEach((ev) => vp.addEventListener(ev, () => (S.userScrollAt = Date.now()), { passive: true }));
+  ["touchmove", "wheel"].forEach((ev) => vp.addEventListener(ev, () => { if (!pinch) S.userScrollAt = Date.now(); }, { passive: true }));
 
   // ustawienia
-  $("#engineSel").onchange = async (e) => { pause(); S.engine = e.target.value; prefs.set("engine", S.engine); await loadVoices(); };
-  $("#voiceSel").onchange = (e) => { S.voice = e.target.value; prefs.set(`voice.${S.engine}.${S.lang}`, S.voice); if (S.playing) playFrom(S.idx); };
+  $("#engineSel").onchange = (e) => onEngineChanged(e.target.value);
+  $("#voiceSel").onchange = (e) => { S.voice = e.target.value; onVoiceChanged(); };
   $$("#langSeg button").forEach((b) => (b.onclick = async () => {
     S.lang = b.dataset.lang;
     if (S.meta) { S.meta.lang = S.lang; db.put("meta", S.meta); }
     await loadVoices();
-    if (S.playing) playFrom(S.idx);
+    onVoiceChanged();
   }));
-  $("#testVoice").onclick = () => {
-    const t = S.lang === "pl" ? "Dzień dobry. Tak brzmi ten głos podczas czytania." : "Hello. This is how this voice sounds while reading.";
-    pause();
-    engine().play([{ id: "-1", text: t }], opts());
+  $("#testVoice").onclick = async () => {
+    const t = S.lang === "pl" ? "Dzień dobry. Tak brzmi ten głos podczas czytania książki." : "Hello. This is how this voice sounds while reading a book.";
+    S.loadedDoc = null; S.playing = false; setPlayIcon();
+    try { await player.load({ items: [{ id: "test", text: t }], index: 0, engine: S.engine, voice: S.voice, locale: locale(), rate: S.rate, title: "Próbka głosu", autoplay: true }); }
+    catch (e) { toast("Nie udało się odtworzyć próbki: " + esc(e.message || e), 5000); }
   };
+  $("#installVoicesBtn").onclick = () => Lektor?.installVoices();
+  $("#ttsSettings").onclick = () => Lektor?.openTtsSettings();
   $("#rate").oninput = (e) => setRate(+e.target.value);
+  $("#sleepSel").onchange = (e) => { const m = +e.target.value; player.setSleepTimer(m); S.sleepEndsAt = m ? Date.now() + m * 60000 : 0; updatePos(); toast(m ? `🌙 Czytanie zatrzyma się za ${m} min` : "Timer snu wyłączony"); };
+  $("#themeSel").onchange = (e) => { prefs.set("theme", e.target.value); applyTheme(e.target.value); };
   $("#fontSize").oninput = (e) => { prefs.set("fontSize", +e.target.value); document.documentElement.style.setProperty("--fs", e.target.value + "px"); };
   $("#follow").onchange = (e) => { S.follow = e.target.checked; prefs.set("follow", S.follow); };
-  $("#ttsSettings").onclick = () => Lektor?.openTtsSettings();
   $("#uocrUrl").onchange = (e) => prefs.set("uocrUrl", e.target.value.trim());
   $("#elevenKey").onchange = async (e) => { localStorage.setItem("lektor.elevenKey", e.target.value.trim()); if (S.engine === "elevenlabs") await loadVoices(); };
+  setInterval(() => { if (S.sleepEndsAt) updatePos(); }, 30000);
 
   // notatka
   $("#composerForm").onsubmit = (e) => { e.preventDefault(); $("#composer").close(); saveNote(); };
-  $("#cancelNote").onclick = () => { stopDictation(); $("#composer").close(); if (C.wasPlaying) playFrom(S.idx); };
+  $("#cancelNote").onclick = () => { stopDictation(); $("#composer").close(); if (C.wasPlaying) resumeAfterNote(); };
   $("#qPrev").onclick = () => extendQuote(-1);
   $("#qNext").onclick = () => extendQuote(1);
   $("#dictate").onclick = toggleDictation;
@@ -673,30 +889,47 @@ function bindUI() {
   $("#gdocMenu").onclick = () => ($("#gdocOptions").hidden = !$("#gdocOptions").hidden);
   $("#rebuildBtn").onclick = async () => {
     if (!S.id) return;
-    if (!prefs.get("google", false)) return toast("Najpierw połącz Google Docs w ⚙ ustawieniach.");
+    if (!gdocs.isConfigured()) return openGdocsSetup();
     toast("Przebudowuję dokument…", 0);
     try {
-      await gdocs.rebuild(await ensureGdoc(), S.meta.title, S.notes);
-      for (const n of S.notes) { n.synced = true; await db.put("notes", n); }
-      toast("Gotowe ✓"); loadNotes();
+      await gdocs.rebuild(S.meta, S.notes);
+      await db.put("meta", S.meta);
+      for (const n of S.notes) { n.synced = true; n.edited = false; await db.put("notes", n); }
+      toast(`Gotowe ✓ <a href="${S.meta.gdocUrl}" target="_blank">otwórz</a>`, 5000); loadNotes();
     } catch (e) { toast("Błąd: " + esc(e.message || e), 7000); }
   };
   $("#linkBtn").onclick = async () => {
-    const raw = prompt("Wklej link do dokumentu Google Docs. Nowe notatki będą dopisywane pod nagłówkami grup:");
-    const id = raw && gdocs.parseDocLink(raw);
-    if (!id) return raw && toast("To nie jest link do Google Docs");
-    S.meta.gdocId = id; await db.put("meta", S.meta); renderNotes(); toast("Podłączono ✓");
+    if (!S.id) return;
+    const raw = await ask("Wklej link do dokumentu Google Docs", "");
+    if (!raw) return;
+    try { await gdocs.link(S.meta, raw); await db.put("meta", S.meta); renderNotes(); toast("Podłączono ✓"); }
+    catch (e) { toast("Błąd: " + esc(e.message || e), 6000); }
   };
-  $("#mdExport").onclick = async () => {
-    const by = new Map();
-    for (const n of S.notes) (by.get(n.group) || by.set(n.group, []).get(n.group)).push(n);
-    let md = `# Notatki – ${S.meta?.title || ""}\n\n`;
-    for (const [g, ns] of by) { md += `## ${g}\n\n`; for (const n of ns) { if (n.quote) md += `> „${n.quote}”${n.page != null ? ` — s. ${n.page + 1}` : ""}\n\n`; if (n.thought) md += n.thought + "\n\n"; } }
-    try { await navigator.clipboard.writeText(md); toast("Skopiowano do schowka ✓"); } catch { prompt("Skopiuj:", md); }
+  $("#shareNotesBtn").onclick = () => S.meta && shareNotes(S.meta);
+  $("#gsCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText(await scriptCode()); toast("Skopiowano kod skryptu ✓ Wklej go w edytorze Apps Script.", 4000); }
+    catch { toast("Nie udało się skopiować – użyj „Wyślij sobie instrukcję”.", 5000); }
+  };
+  $("#gsShare").onclick = async () => {
+    const code = await scriptCode();
+    const text = `Lektor → Google Docs: instrukcja\n\n1. Otwórz https://script.google.com/home/projects/create\n2. Usuń przykładowy kod i wklej cały kod poniżej, zapisz.\n3. Wdróż → Nowe wdrożenie → Aplikacja internetowa (Wykonaj jako: Ja; Kto ma dostęp: Każdy) → Wdróż → zezwól na dostęp.\n4. Otwórz „Adres URL aplikacji internetowej” na telefonie i stuknij „Otwórz w Lektorze”.\n\n===== KOD SKRYPTU =====\n\n${code}`;
+    try { await share({ title: "Lektor – instrukcja Google Docs", text }); } catch { /* anulowano */ }
+  };
+  $("#gsOpen").onclick = () => openExternal("https://script.google.com/home/projects/create");
+  $("#gsConnect").onclick = async () => { if (await connectScript($("#gsUrl").value)) $("#gdocsSetup").close(); };
+  $("#gsClose").onclick = () => $("#gdocsSetup").close();
+  $("#gsOauth").onclick = async () => {
+    try { await gdocs.connectOAuth(); toast("Zalogowano do Google ✓"); renderGoogle(); renderNotes(); $("#gdocsSetup").close(); syncPending(); }
+    catch (e) { toast("Logowanie nieudane: " + esc(e.message || e) + "<br><small>Wymaga klucza OAuth w Google Cloud (zob. README).</small>", 9000); }
   };
 
+  // menu dokumentu
+  $("#dmOpen").onclick = () => { $("#docMenu").close(); closeDrawers(); openDoc(menuMeta.id); };
+  $("#dmRename").onclick = () => { $("#docMenu").close(); renameDoc(menuMeta); };
+  $("#dmShare").onclick = () => { $("#docMenu").close(); shareNotes(menuMeta); };
+  $("#dmDelete").onclick = () => { $("#docMenu").close(); deleteDoc(menuMeta); };
+
   // wklejanie tekstu
-  $("#pasteBtn").onclick = () => $("#pasteDlg").showModal();
   $("#pasteDlg").addEventListener("close", () => {
     if ($("#pasteDlg").returnValue !== "ok") return;
     const text = $("#pasteText").value.trim();
@@ -705,22 +938,16 @@ function bindUI() {
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.target.closest("input, textarea, select, [contenteditable=true]")) return;
+    if (e.target.closest("input, textarea, select, [contenteditable=true]") || $$("dialog[open]").length) return;
     if (e.key === " ") { e.preventDefault(); toggle(); }
     else if (e.key === "ArrowRight") jumpTo(S.idx + 1);
     else if (e.key === "ArrowLeft") jumpTo(S.idx - 1);
     else if (e.key.toLowerCase() === "n") { e.preventDefault(); openComposer(); }
   });
+  document.addEventListener("visibilitychange", () => {
+    savePos();
+    if (!document.hidden) syncPlayerState();
+  });
 }
-
-document.addEventListener("visibilitychange", () => {
-  if (S.meta) { S.meta.position = S.idx; db.put("meta", S.meta); }
-  // w tle WebView może zostać uśpiony – dokładamy do kolejki telefonu dużo zdań naraz
-  if (document.hidden && S.playing && S.engine === "android" && S.queuedTo < S.doc.sentences.length - 1) {
-    const from = S.queuedTo + 1;
-    S.queuedTo = Math.min(S.doc.sentences.length - 1, from + 400);
-    engine().enqueue(items(from, S.queuedTo), opts());
-  }
-});
 
 init().catch((e) => toast("Błąd startu: " + esc(e.message || e), 10000));

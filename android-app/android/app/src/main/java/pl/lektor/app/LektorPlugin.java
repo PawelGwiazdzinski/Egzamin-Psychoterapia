@@ -11,10 +11,8 @@ import android.graphics.BitmapFactory;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.speech.tts.TextToSpeech;
-import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
 import android.util.Base64;
 
@@ -48,38 +46,39 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
-import java.util.Set;
 
 /**
- * Natywne funkcje Lektora:
- *  - mowa: systemowy TextToSpeech (preferowane "Usługi Google do zamiany mowy"), zdarzenia start/range/done,
- *  - usługa pierwszoplanowa, żeby czytanie trwało przy wygaszonym ekranie,
- *  - OCR: ML Kit (na urządzeniu),
- *  - logowanie Google (AuthorizationClient) -> token dostępu do Google Docs,
- *  - odbieranie plików PDF / tekstu udostępnionych z innych aplikacji.
+ * Most między aplikacją (WebView) a Androidem:
+ *  - czytanie (Playback: głosy Edge / głosy telefonu, tło, słuchawki, powiadomienie),
+ *  - OCR skanów (ML Kit, na urządzeniu),
+ *  - logowanie Google (opcjonalne, OAuth),
+ *  - pliki udostępnione z innych aplikacji i linki lektor://.
  */
 @CapacitorPlugin(name = "Lektor")
-public class LektorPlugin extends Plugin {
-    private static final String GOOGLE_TTS = "com.google.android.tts";
+public class LektorPlugin extends Plugin implements Playback.Listener {
     static LektorPlugin instance;
 
-    private TextToSpeech tts;
-    private boolean ttsReady = false;
-    private final List<Runnable> pendingTts = new ArrayList<>();
-    private String lastQueuedId = null;
-    private String title = "Lektor";
+    private static final String[][] EDGE_VOICES = {
+            {"pl-PL-MarekNeural", "Marek ♂", "pl-PL"},
+            {"pl-PL-ZofiaNeural", "Zofia ♀", "pl-PL"},
+            {"en-US-AndrewMultilingualNeural", "Andrew ♂", "en-US"},
+            {"en-US-BrianMultilingualNeural", "Brian ♂", "en-US"},
+            {"en-GB-RyanNeural", "Ryan (GB) ♂", "en-GB"},
+            {"en-US-GuyNeural", "Guy ♂", "en-US"},
+            {"en-US-AvaMultilingualNeural", "Ava ♀", "en-US"},
+            {"en-GB-SoniaNeural", "Sonia (GB) ♀", "en-GB"},
+    };
 
+    private Playback playback;
     private ActivityResultLauncher<IntentSenderRequest> authLauncher;
     private PluginCall pendingAuth;
-
-    private JSObject pendingShared;
     private TextRecognizer recognizer;
 
     @Override
     public void load() {
         instance = this;
-        initTts();
+        playback = Playback.get(getContext());
+        playback.setListener(this);
         authLauncher = getActivity().getActivityResultRegistry().register(
                 "lektor-google-auth",
                 new ActivityResultContracts.StartIntentSenderForResult(),
@@ -99,168 +98,163 @@ public class LektorPlugin extends Plugin {
                 Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(getActivity(), new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1001);
         }
-        readSharedIntent(getActivity().getIntent(), false);
+        readIntent(getActivity().getIntent());
     }
 
     @Override
     protected void handleOnNewIntent(Intent intent) {
         super.handleOnNewIntent(intent);
-        readSharedIntent(intent, true);
+        readIntent(intent);
     }
 
     @Override
     protected void handleOnDestroy() {
-        if (tts != null) tts.shutdown();
-        stopService();
-        instance = null;
-    }
-
-    // ------------------------------------------------------------------ TTS
-    private boolean isInstalled(String pkg) {
-        try {
-            getContext().getPackageManager().getPackageInfo(pkg, 0);
-            return true;
-        } catch (PackageManager.NameNotFoundException e) {
-            return false;
+        if (instance == this) {
+            instance = null;
+            if (playback != null) playback.setListener(null); // czytanie trwa dalej w tle
         }
     }
 
-    private void initTts() {
-        TextToSpeech.OnInitListener onInit = status -> {
-            ttsReady = status == TextToSpeech.SUCCESS;
-            List<Runnable> run = new ArrayList<>(pendingTts);
-            pendingTts.clear();
-            for (Runnable r : run) r.run();
-        };
-        tts = isInstalled(GOOGLE_TTS)
-                ? new TextToSpeech(getContext(), onInit, GOOGLE_TTS)
-                : new TextToSpeech(getContext(), onInit);
-        tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override
-            public void onStart(String id) { emit("start", id, -1, -1, null); }
-
-            @Override
-            public void onDone(String id) {
-                emit("done", id, -1, -1, null);
-                if (id != null && id.equals(lastQueuedId)) stopService();
-            }
-
-            @Override
-            @SuppressWarnings("deprecation")
-            public void onError(String id) { emit("error", id, -1, -1, "błąd syntezy mowy"); }
-
-            @Override
-            public void onError(String id, int code) {
-                emit("error", id, -1, -1, code == TextToSpeech.ERROR_NETWORK || code == TextToSpeech.ERROR_NETWORK_TIMEOUT
-                        ? "głos wymaga internetu – wybierz głos offline" : "błąd syntezy mowy (" + code + ")");
-            }
-
-            @Override
-            public void onRangeStart(String id, int start, int end, int frame) { emit("range", id, start, end, null); }
-        });
+    // ------------------------------------------------------------------ zdarzenia z Playback
+    @Override
+    public void onTts(JSObject e) {
+        notifyListeners("tts", e);
     }
 
-    private void whenReady(PluginCall call, Runnable r) {
-        if (ttsReady) r.run();
-        else if (tts == null) call.reject("Brak syntezatora mowy");
-        else pendingTts.add(r);
+    @Override
+    public void onState(JSObject s) {
+        notifyListeners("state", s);
     }
 
-    private void emit(String type, String id, int start, int end, String message) {
-        JSObject o = new JSObject();
-        o.put("type", type);
-        o.put("id", id);
-        if (start >= 0) { o.put("start", start); o.put("end", end); }
-        if (message != null) o.put("message", message);
-        notifyListeners("tts", o);
-    }
-
+    // ------------------------------------------------------------------ głosy
     @PluginMethod
     public void getVoices(PluginCall call) {
-        whenReady(call, () -> {
+        String engine = call.getString("engine", "system");
+        if ("edge".equals(engine)) {
             JSArray arr = new JSArray();
-            Set<Voice> voices = null;
-            try { voices = tts.getVoices(); } catch (Exception ignored) { }
-            if (voices != null) {
-                for (Voice v : voices) {
-                    JSObject o = new JSObject();
-                    o.put("name", v.getName());
-                    o.put("locale", v.getLocale().toLanguageTag());
-                    o.put("quality", v.getQuality());
-                    o.put("network", v.isNetworkConnectionRequired());
-                    o.put("notInstalled", v.getFeatures() != null
-                            && v.getFeatures().contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED));
-                    arr.put(o);
-                }
+            for (String[] v : EDGE_VOICES) {
+                JSObject o = new JSObject();
+                o.put("name", v[0]);
+                o.put("label", v[1]);
+                o.put("locale", v[2]);
+                o.put("male", v[1].contains("♂"));
+                o.put("network", true);
+                o.put("notInstalled", false);
+                arr.put(o);
             }
             JSObject ret = new JSObject();
             ret.put("voices", arr);
-            ret.put("engine", tts.getDefaultEngine());
+            ret.put("engine", "edge");
+            call.resolve(ret);
+            return;
+        }
+        SystemTtsSpeaker sys = playback.systemSpeaker();
+        sys.whenReady(() -> {
+            JSArray arr = new JSArray();
+            for (Voice v : sys.voices()) {
+                JSObject o = new JSObject();
+                o.put("name", v.getName());
+                o.put("locale", v.getLocale().toLanguageTag());
+                o.put("quality", v.getQuality());
+                o.put("network", v.isNetworkConnectionRequired());
+                o.put("notInstalled", v.getFeatures() != null
+                        && v.getFeatures().contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED));
+                arr.put(o);
+            }
+            JSObject ret = new JSObject();
+            ret.put("voices", arr);
+            ret.put("engine", sys.engineName());
+            ret.put("ready", sys.isReady());
+            ret.put("googleInstalled", SystemTtsSpeaker.isInstalled(getContext(), SystemTtsSpeaker.GOOGLE_TTS));
             call.resolve(ret);
         });
     }
 
-    private void applyVoice(String voiceName, String locale) {
-        Voice chosen = null;
-        if (voiceName != null && !voiceName.isEmpty()) {
-            try {
-                for (Voice v : tts.getVoices()) if (v.getName().equals(voiceName)) { chosen = v; break; }
-            } catch (Exception ignored) { }
+    // ------------------------------------------------------------------ odtwarzanie
+    @PluginMethod
+    public void load(PluginCall call) {
+        JSArray arr = call.getArray("items", new JSArray());
+        List<Speaker.Item> items = new ArrayList<>(arr.length());
+        try {
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject it = arr.getJSONObject(i);
+                items.add(new Speaker.Item(it.getString("id"), it.getString("text")));
+            }
+        } catch (Exception e) {
+            call.reject("Nieprawidłowa lista zdań");
+            return;
         }
-        if (chosen != null) tts.setVoice(chosen);
-        else tts.setLanguage(Locale.forLanguageTag(locale));
+        playback.load(items,
+                call.getInt("index", 0),
+                call.getString("engine", "edge"),
+                call.getString("voice", ""),
+                call.getString("locale", "pl-PL"),
+                call.getFloat("rate", 1f),
+                call.getString("title", ""),
+                call.getBoolean("autoplay", true));
+        call.resolve(playback.state());
     }
 
     @PluginMethod
-    public void speak(PluginCall call) {
-        final JSArray items = call.getArray("items", new JSArray());
-        final String voice = call.getString("voice", "");
-        final String locale = call.getString("locale", "pl-PL");
-        final float rate = call.getFloat("rate", 1f);
-        final boolean flush = call.getBoolean("flush", true);
-        final String t = call.getString("title", "");
-        whenReady(call, () -> {
-            try {
-                if (flush) tts.stop();
-                applyVoice(voice, locale);
-                tts.setSpeechRate(rate);
-                int max = TextToSpeech.getMaxSpeechInputLength() - 1;
-                for (int i = 0; i < items.length(); i++) {
-                    JSONObject it = items.getJSONObject(i);
-                    String id = it.getString("id");
-                    String text = it.getString("text");
-                    if (text.length() > max) text = text.substring(0, max);
-                    Bundle params = new Bundle();
-                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id);
-                    int mode = (i == 0 && flush) ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
-                    tts.speak(text, mode, params, id);
-                    lastQueuedId = id;
-                }
-                if (t != null && !t.isEmpty()) title = t;
-                startService();
-                call.resolve();
-            } catch (Exception e) {
-                call.reject("Błąd mowy: " + e.getMessage());
-            }
-        });
+    public void play(PluginCall call) {
+        playback.play();
+        call.resolve(playback.state());
+    }
+
+    @PluginMethod
+    public void pause(PluginCall call) {
+        playback.pause();
+        call.resolve(playback.state());
     }
 
     @PluginMethod
     public void stop(PluginCall call) {
-        if (tts != null) tts.stop();
-        stopService();
-        call.resolve();
+        playback.stop();
+        call.resolve(playback.state());
     }
 
-    /** Wywoływane z powiadomienia ("Pauza"). */
-    void pauseFromNotification() {
-        if (tts != null) tts.stop();
-        stopService();
-        JSObject o = new JSObject();
-        o.put("action", "pause");
-        notifyListeners("media", o, true);
+    @PluginMethod
+    public void next(PluginCall call) {
+        playback.next();
+        call.resolve(playback.state());
     }
 
+    @PluginMethod
+    public void prev(PluginCall call) {
+        playback.prev();
+        call.resolve(playback.state());
+    }
+
+    @PluginMethod
+    public void seek(PluginCall call) {
+        playback.seek(call.getInt("index", 0));
+        call.resolve(playback.state());
+    }
+
+    @PluginMethod
+    public void setRate(PluginCall call) {
+        playback.setRate(call.getFloat("rate", 1f));
+        call.resolve(playback.state());
+    }
+
+    @PluginMethod
+    public void setVoice(PluginCall call) {
+        playback.setVoice(call.getString("engine", "edge"), call.getString("voice", ""), call.getString("locale", "pl-PL"));
+        call.resolve(playback.state());
+    }
+
+    @PluginMethod
+    public void setSleepTimer(PluginCall call) {
+        playback.setSleepTimer(call.getInt("minutes", 0));
+        call.resolve(playback.state());
+    }
+
+    @PluginMethod
+    public void getState(PluginCall call) {
+        call.resolve(playback.state());
+    }
+
+    // ------------------------------------------------------------------ ustawienia głosów telefonu
     @PluginMethod
     public void openTtsSettings(PluginCall call) {
         try {
@@ -270,32 +264,53 @@ public class LektorPlugin extends Plugin {
         } catch (Exception e) {
             Intent i = new Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA);
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            getContext().startActivity(i);
+            try {
+                getContext().startActivity(i);
+            } catch (Exception ignored) { }
         }
         call.resolve();
     }
 
-    private void startService() {
-        Intent i = new Intent(getContext(), TtsService.class);
-        i.putExtra("title", title);
-        try { ContextCompat.startForegroundService(getContext(), i); } catch (Exception ignored) { }
-    }
-
-    private void stopService() {
-        try { getContext().stopService(new Intent(getContext(), TtsService.class)); } catch (Exception ignored) { }
+    /** Otwiera ekran pobierania głosów Google (albo sklep, jeśli silnika Google nie ma). */
+    @PluginMethod
+    public void installVoices(PluginCall call) {
+        boolean google = SystemTtsSpeaker.isInstalled(getContext(), SystemTtsSpeaker.GOOGLE_TTS);
+        try {
+            if (google) {
+                Intent i = new Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA);
+                i.setPackage(SystemTtsSpeaker.GOOGLE_TTS);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(i);
+            } else {
+                Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + SystemTtsSpeaker.GOOGLE_TTS));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(i);
+            }
+        } catch (Exception e) {
+            openTtsSettings(call);
+            return;
+        }
+        JSObject r = new JSObject();
+        r.put("googleInstalled", google);
+        call.resolve(r);
     }
 
     // ------------------------------------------------------------------ OCR (ML Kit)
     @PluginMethod
     public void ocr(PluginCall call) {
         String b64 = call.getString("image");
-        if (b64 == null) { call.reject("Brak obrazu"); return; }
+        if (b64 == null) {
+            call.reject("Brak obrazu");
+            return;
+        }
         byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
         Bitmap bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-        if (bmp == null) { call.reject("Nieprawidłowy obraz"); return; }
+        if (bmp == null) {
+            call.reject("Nieprawidłowy obraz");
+            return;
+        }
         if (recognizer == null) recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
-        TextRecognizer rec = recognizer;
-        rec.process(InputImage.fromBitmap(bmp, 0))
+        recognizer.process(InputImage.fromBitmap(bmp, 0))
                 .addOnSuccessListener(text -> {
                     JSArray blocks = new JSArray();
                     for (Text.TextBlock b : text.getTextBlocks()) {
@@ -308,7 +323,10 @@ public class LektorPlugin extends Plugin {
                                 JSObject w = new JSObject();
                                 w.put("text", e.getText());
                                 JSArray box = new JSArray();
-                                box.put(r.left); box.put(r.top); box.put(r.right); box.put(r.bottom);
+                                box.put(r.left);
+                                box.put(r.top);
+                                box.put(r.right);
+                                box.put(r.bottom);
                                 w.put("box", box);
                                 words.put(w);
                             }
@@ -329,7 +347,7 @@ public class LektorPlugin extends Plugin {
                 .addOnFailureListener(e -> call.reject("OCR: " + e.getMessage()));
     }
 
-    // ------------------------------------------------------------------ Google
+    // ------------------------------------------------------------------ Google (OAuth, opcjonalnie)
     @PluginMethod
     public void googleAuthorize(PluginCall call) {
         JSArray arr = call.getArray("scopes", new JSArray());
@@ -337,14 +355,23 @@ public class LektorPlugin extends Plugin {
         List<Scope> scopes = new ArrayList<>();
         try {
             for (int i = 0; i < arr.length(); i++) scopes.add(new Scope(arr.getString(i)));
-        } catch (Exception e) { call.reject("Złe zakresy"); return; }
+        } catch (Exception e) {
+            call.reject("Złe zakresy");
+            return;
+        }
         AuthorizationRequest req = AuthorizationRequest.builder().setRequestedScopes(scopes).build();
         Identity.getAuthorizationClient(getActivity()).authorize(req)
                 .addOnSuccessListener(res -> {
                     if (res.hasResolution()) {
-                        if (!interactive) { call.reject("Wymagane logowanie"); return; }
+                        if (!interactive) {
+                            call.reject("Wymagane logowanie");
+                            return;
+                        }
                         PendingIntent pi = res.getPendingIntent();
-                        if (pi == null) { call.reject("Brak okna logowania"); return; }
+                        if (pi == null) {
+                            call.reject("Brak okna logowania");
+                            return;
+                        }
                         pendingAuth = call;
                         authLauncher.launch(new IntentSenderRequest.Builder(pi.getIntentSender()).build());
                     } else {
@@ -356,27 +383,33 @@ public class LektorPlugin extends Plugin {
 
     private void resolveToken(PluginCall call, AuthorizationResult r) {
         String token = r.getAccessToken();
-        if (token == null) { call.reject("Brak tokenu Google"); return; }
+        if (token == null) {
+            call.reject("Brak tokenu Google");
+            return;
+        }
         JSObject o = new JSObject();
         o.put("accessToken", token);
         call.resolve(o);
     }
 
-    // ------------------------------------------------------------------ udostępnione pliki
-    @PluginMethod
-    public void getSharedFile(PluginCall call) {
-        JSObject o = pendingShared != null ? pendingShared : new JSObject();
-        pendingShared = null;
-        call.resolve(o);
-    }
-
-    private void readSharedIntent(Intent intent, boolean notify) {
+    // ------------------------------------------------------------------ pliki i linki z zewnątrz
+    private void readIntent(Intent intent) {
         if (intent == null) return;
         String action = intent.getAction();
         Uri uri = null;
         String text = null;
-        if (Intent.ACTION_VIEW.equals(action)) uri = intent.getData();
-        else if (Intent.ACTION_SEND.equals(action)) {
+        if (Intent.ACTION_VIEW.equals(action)) {
+            uri = intent.getData();
+            if (uri != null && "lektor".equalsIgnoreCase(uri.getScheme())) {
+                JSObject o = new JSObject();
+                o.put("url", uri.toString());
+                o.put("host", uri.getHost());
+                for (String k : uri.getQueryParameterNames()) o.put(k, uri.getQueryParameter(k));
+                intent.setAction(null);
+                notifyListeners("appLink", o, true);
+                return;
+            }
+        } else if (Intent.ACTION_SEND.equals(action)) {
             uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri.class);
             if (uri == null) text = intent.getStringExtra(Intent.EXTRA_TEXT);
         } else return;
@@ -410,7 +443,6 @@ public class LektorPlugin extends Plugin {
             } catch (Exception e) {
                 o.put("error", e.getMessage());
             }
-            // retain=true: dostarczy zdarzenie także, gdy JS jeszcze nie nasłuchuje (start aplikacji)
             notifyListeners("sharedFile", o, true);
         }).start();
     }

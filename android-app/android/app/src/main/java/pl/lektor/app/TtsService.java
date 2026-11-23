@@ -1,58 +1,57 @@
 package pl.lektor.app;
 
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
 
-import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 
-/** Usługa pierwszoplanowa: trzyma aplikację przy życiu podczas czytania przy wygaszonym ekranie. */
+/** Usługa pierwszoplanowa: utrzymuje czytanie przy wygaszonym ekranie i obsługuje przyciski powiadomienia. */
 public class TtsService extends Service {
+    static final String ACTION_START = "pl.lektor.app.START";
+    static final String ACTION_PLAY = "pl.lektor.app.PLAY";
     static final String ACTION_PAUSE = "pl.lektor.app.PAUSE";
-    private static final String CHANNEL = "lektor_reading";
+    static final String ACTION_NEXT = "pl.lektor.app.NEXT";
+    static final String ACTION_PREV = "pl.lektor.app.PREV";
+    static final String ACTION_STOP = "pl.lektor.app.STOP";
+
+    static volatile boolean running;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        running = true;
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_PAUSE.equals(intent.getAction())) {
-            if (LektorPlugin.instance != null) LektorPlugin.instance.pauseFromNotification();
-            stopSelf();
-            return START_NOT_STICKY;
-        }
-        String title = intent != null && intent.getStringExtra("title") != null ? intent.getStringExtra("title") : "Lektor";
-        NotificationManager nm = getSystemService(NotificationManager.class);
-        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL) == null) {
-            NotificationChannel ch = new NotificationChannel(CHANNEL, "Czytanie", NotificationManager.IMPORTANCE_LOW);
-            ch.setShowBadge(false);
-            nm.createNotificationChannel(ch);
-        }
-        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
-        Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        PendingIntent openPi = PendingIntent.getActivity(this, 0, open, piFlags);
-        PendingIntent pausePi = PendingIntent.getService(this, 1,
-                new Intent(this, TtsService.class).setAction(ACTION_PAUSE), piFlags);
-        Notification n = new NotificationCompat.Builder(this, CHANNEL)
-                .setSmallIcon(android.R.drawable.ic_media_play)
-                .setContentTitle(title)
-                .setContentText("Lektor czyta…")
-                .setContentIntent(openPi)
-                .addAction(android.R.drawable.ic_media_pause, "Pauza", pausePi)
-                .setOngoing(true)
-                .setSilent(true)
-                .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .build();
+        Playback p = Playback.get(this);
         int type = Build.VERSION.SDK_INT >= 29 ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK : 0;
-        ServiceCompat.startForeground(this, 1, n, type);
+        // Zawsze wchodzimy w tryb pierwszoplanowy (wymóg: do 5 s od startForegroundService).
+        ServiceCompat.startForeground(this, Playback.NOTIFICATION_ID, p.buildNotification(), type);
+        String action = intent != null ? intent.getAction() : null;
+        if (ACTION_PLAY.equals(action)) p.play();
+        else if (ACTION_PAUSE.equals(action)) p.pause();
+        else if (ACTION_NEXT.equals(action)) p.next();
+        else if (ACTION_PREV.equals(action)) p.prev();
+        else if (ACTION_STOP.equals(action)) {
+            p.stop();
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
+            stopSelf();
+        }
         return START_NOT_STICKY;
     }
 
     @Override
-    public IBinder onBind(Intent intent) { return null; }
+    public void onDestroy() {
+        running = false;
+        super.onDestroy();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
 }
