@@ -6,6 +6,37 @@
 <meta name="color-scheme" content="light dark">
 <title>Lektor</title>
 <link rel="stylesheet" href="styles.css">
+<script>
+  // Diagnostyka startu: jeśli aplikacja się nie uruchomi, pokaż przyczynę zamiast pustego ekranu.
+  window.__lektorErrors = [];
+  window.__lektorFatal = function (msg) {
+    if (window.__lektorReady) return;
+    var box = document.getElementById("fatal");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "fatal";
+      box.style.cssText = "position:fixed;left:12px;right:12px;bottom:110px;z-index:99;background:#7f1d1d;color:#fff;" +
+        "font:14px/1.4 system-ui,sans-serif;padding:12px 14px;border-radius:12px;white-space:pre-wrap;word-break:break-word";
+      (document.body || document.documentElement).appendChild(box);
+    }
+    box.textContent = "Lektor nie uruchomił się poprawnie. Zrób zrzut ekranu i wyślij go.\n\n" + msg;
+  };
+  addEventListener("error", function (e) {
+    var t = e.target, m;
+    if (t && t !== window && (t.src || t.href)) m = "Nie wczytano pliku: " + (t.src || t.href);
+    else m = (e.message || "błąd") + (e.filename ? " (" + e.filename.split("/").pop() + ":" + e.lineno + ")" : "");
+    window.__lektorErrors.push(m);
+    setTimeout(function () { window.__lektorFatal(window.__lektorErrors.join("\n")); }, 0);
+  }, true);
+  addEventListener("unhandledrejection", function (e) {
+    var r = e.reason;
+    window.__lektorErrors.push("Promise: " + (r && (r.stack || r.message) || r));
+  });
+  setTimeout(function () {
+    window.__lektorFatal("Aplikacja nie wystartowała w ciągu 10 s.\n" + window.__lektorErrors.join("\n"));
+  }, 10000);
+</script>
+<script src="vendor/capacitor.js"></script>
 </head>
 <body>
 <div id="app">

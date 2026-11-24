@@ -39,7 +39,11 @@ jobs:
         run: npm ci
 
       - name: Kopiowanie aplikacji do projektu Androida
-        run: npm run sync
+        run: |
+          npm run sync
+          # kontrola: rdzeń Capacitora musi być dołączony, inaczej aplikacja nie wystartuje
+          test -f android/app/src/main/assets/public/vendor/capacitor.js
+          grep -q 'vendor/capacitor.js' android/app/src/main/assets/public/index.html
 
       - name: Klucz podpisu z sekretu
         env:

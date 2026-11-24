@@ -35,7 +35,7 @@ Notatki zapisuje mały skrypt **Google Apps Script** na Twoim koncie. Nie potrze
 Najwygodniej zrobić to na komputerze:
 
 1. W Lektorze stuknij ⚙ → **Google Docs → Skonfiguruj** i wybierz **Wyślij sobie instrukcję z kodem** (np. na e-mail).
-   Kod skryptu jest też w repozytorium: [`www/lektor-docs.gs`](www/lektor-docs.gs).
+   Kod skryptu jest też w repozytorium: [`www/lektor-docs.txt`](www/lektor-docs.txt).
 2. Na komputerze otwórz https://script.google.com/home/projects/create, usuń przykładowy kod, wklej skrypt i zapisz.
 3. Kliknij **Wdróż → Nowe wdrożenie → Aplikacja internetowa**. Ustaw *Wykonaj jako:* **Ja** i *Kto ma dostęp:* **Każdy**, potem **Wdróż**.
    Zezwól na dostęp: przy ostrzeżeniu „Google nie zweryfikował tej aplikacji” wybierz *Zaawansowane → Otwórz*. To Twój własny skrypt.
@@ -70,7 +70,7 @@ www/js/pdfdoc.js     pdf.js: słowa z pozycjami, nagłówki/stopki, render stron
 www/js/textproc.js   podział na zdania (PL/EN, skróty), wykrywanie języka
 www/js/speech.js     fasada odtwarzacza (natywny / ElevenLabs / przeglądarka), wybór głosu męskiego
 www/js/gdocs.js      notatki w Google Docs (Apps Script albo OAuth)
-www/lektor-docs.gs   skrypt Apps Script do wdrożenia na koncie Google
+www/lektor-docs.txt  skrypt Apps Script do wdrożenia na koncie Google
 www/js/ocr.js        ML Kit + Unlimited-OCR
 android/.../Playback.java          kolejka zdań, fokus audio, MediaSession, powiadomienie
 android/.../EdgeTts.java           klient głosów Edge (WebSocket), SecMsGec.java – token

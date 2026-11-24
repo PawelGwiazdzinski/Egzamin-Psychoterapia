@@ -7,7 +7,7 @@ import { player, availableEngines, ENGINE_LABEL } from "./speech.js";
 import * as gdocs from "./gdocs.js";
 import { Lektor, isNative, share, onBackButton, minimizeApp, openExternal } from "./native.js";
 
-const APP_VERSION = "1.1";
+const APP_VERSION = "1.2";
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -41,6 +41,9 @@ async function init() {
   S.engine = prefs.get("engine", null);
   if (!S.engines.includes(S.engine)) S.engine = S.engines[0];
   bindUI();
+  window.__lektorReady = true;
+  document.getElementById("fatal")?.remove();
+  addEventListener("unhandledrejection", (e) => console.error("unhandled", e.reason));
   player.on(onPlayerEvent);
   await renderLibrary();
   const last = prefs.get("lastDoc", null);
@@ -802,7 +805,8 @@ function onAppLink(l) {
   if (l.host === "connect" && u) connectScript(decodeURIComponent(u));
 }
 async function scriptCode() {
-  const r = await fetch("lektor-docs.gs");
+  const r = await fetch("lektor-docs.txt");
+  if (!r.ok) throw new Error("brak pliku skryptu");
   return r.text();
 }
 
@@ -950,4 +954,8 @@ function bindUI() {
   });
 }
 
-init().catch((e) => toast("Błąd startu: " + esc(e.message || e), 10000));
+init().catch((e) => {
+  console.error(e);
+  if (!window.__lektorReady) window.__lektorFatal?.("Błąd startu: " + (e.stack || e.message || e));
+  else toast("Błąd startu: " + esc(e.message || e), 10000);
+});

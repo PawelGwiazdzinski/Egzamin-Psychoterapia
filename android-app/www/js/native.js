@@ -1,12 +1,19 @@
 // Most do natywnej wtyczki Androida "Lektor" (czytanie, OCR ML Kit, logowanie Google, pliki z zewnątrz).
 // W zwykłej przeglądarce (testy na komputerze) część funkcji ma zamienniki webowe.
 
+// window.Capacitor: most natywny (wstrzykiwany przez Androida) + rdzeń z vendor/capacitor.js (registerPlugin).
 const Cap = window.Capacitor;
-export const isNative = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
-export const Lektor = isNative ? Cap.registerPlugin("Lektor") : null;
-const Http = isNative ? Cap.Plugins.CapacitorHttp : null;
-const ShareP = isNative ? Cap.Plugins.Share : null;
-const AppP = isNative ? Cap.Plugins.App : null;
+const canRegister = !!(Cap && typeof Cap.registerPlugin === "function");
+export const isNative = !!(canRegister && Cap.isNativePlatform && Cap.isNativePlatform());
+if (Cap && Cap.isNativePlatform?.() && !canRegister) console.error("Brak vendor/capacitor.js – funkcje natywne wyłączone");
+
+function reg(name) {
+  try { return Cap.registerPlugin(name); } catch (e) { console.error(e); return null; }
+}
+export const Lektor = isNative ? reg("Lektor") : null;
+const Http = isNative ? (Cap.Plugins?.CapacitorHttp || window.capacitorExports?.CapacitorHttp || null) : null;
+const ShareP = isNative ? reg("Share") : null;
+const AppP = isNative ? reg("App") : null;
 
 /** Żądanie HTTP bez ograniczeń CORS (natywnie) albo zwykły fetch (przeglądarka). */
 export async function http({ url, method = "GET", headers = {}, data, responseType = "json", timeout = 60000 }) {
